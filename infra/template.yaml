@@ -20,6 +20,48 @@ Parameters:
     Default: 14
     Description: CloudWatch log retention. Kept short to bound cost.
 
+  # Roles the deploying principal cannot create (PowerUserAccess cannot call
+  # iam:CreateRole), so they are created out of band and passed in.
+  LambdaRoleArn:
+    Type: String
+    Default: ''
+    Description: Execution role for the investigation lifecycle Lambdas.
+
+  StateMachineRoleArn:
+    Type: String
+    Default: ''
+    Description: Execution role for the investigation state machine.
+
+  TaskExecutionRoleArn:
+    Type: String
+    Default: ''
+    Description: ECS agent role, used to pull the image and write logs.
+
+  TaskRoleArn:
+    Type: String
+    Default: ''
+    Description: Role assumed by the investigator container itself.
+
+  EventsRoleArn:
+    Type: String
+    Default: ''
+    Description: Role EventBridge assumes to start a state machine execution.
+
+  InvestigatorImageUri:
+    Type: String
+    Default: ''
+    Description: ECR image URI for the investigator task.
+
+  VpcSubnetIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: Public subnets the investigation task runs in.
+
+  VpcId:
+    Type: String
+    Default: ''
+    Description: VPC containing those subnets.
+
   ExecutionRoleArn:
     Type: String
     Default: ''
@@ -34,6 +76,12 @@ Parameters:
 Conditions:
   # Whether the deployer supplied a role, or the stack must create one.
   UseSuppliedRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
+  # The investigation workflow only deploys once its roles and image exist, so
+  # the webhook stack stays deployable on its own.
+  DeployWorkflow: !And
+    - !Not [!Equals [!Ref LambdaRoleArn, '']]
+    - !Not [!Equals [!Ref StateMachineRoleArn, '']]
+    - !Not [!Equals [!Ref InvestigatorImageUri, '']]
 
 Globals:
   Function:
@@ -210,6 +258,238 @@ Resources:
       LogGroupName: !Sub '/aws/apigateway/netra-${Stage}-webhook'
       RetentionInDays: !Ref LogRetentionDays
 
+
+  # --------------------------------------------------------------------------
+  # Investigation workflow
+  # --------------------------------------------------------------------------
+
+  # One partition per investigation, so the record, its lifecycle events,
+  # findings, evidence, verification results and blast radius are a single
+  # query rather than six.
+  InvestigationsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: DeployWorkflow
+    Properties:
+      TableName: !Sub 'netra-${Stage}-investigations'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+
+  InvestigatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployWorkflow
+    Properties:
+      LogGroupName: !Sub '/aws/ecs/netra-${Stage}-investigator'
+      RetentionInDays: !Ref LogRetentionDays
+
+  InvestigationCluster:
+    Type: AWS::ECS::Cluster
+    Condition: DeployWorkflow
+    Properties:
+      ClusterName: !Sub 'netra-${Stage}'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled      # Per-task metrics are not worth the cost here.
+
+  # Egress only: the task must reach GitHub and the model gateway, and nothing
+  # needs to reach the task.
+  InvestigatorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: DeployWorkflow
+    Properties:
+      GroupDescription: Netra investigation task; outbound only.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS to GitHub and the model gateway.
+      Tags:
+        - Key: Name
+          Value: !Sub 'netra-${Stage}-investigator'
+
+  InvestigatorTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: DeployWorkflow
+    Properties:
+      Family: !Sub 'netra-${Stage}-investigator'
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !Ref TaskExecutionRoleArn
+      TaskRoleArn: !Ref TaskRoleArn
+      ContainerDefinitions:
+        - Name: investigator
+          Image: !Ref InvestigatorImageUri
+          Essential: true
+          ReadonlyRootFilesystem: false   # The workspace is written under /tmp.
+          Environment:
+            - Name: NETRA_TABLE_NAME
+              Value: !Sub 'netra-${Stage}-investigations'
+            - Name: AWS_REGION
+              Value: !Ref 'AWS::Region'
+          # Resolved by the ECS agent at start time, so no secret value appears
+          # in the task definition or in an API response that describes it.
+          Secrets:
+            - Name: NETRA_GITHUB_APP_SECRET
+              ValueFrom: !Ref GitHubAppSecret
+            - Name: OPENROUTER_API_KEYS
+              ValueFrom: !Ref ModelProviderSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref InvestigatorLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: task
+
+  # Declared with no value; populated out of band like the GitHub App secret.
+  ModelProviderSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: DeployWorkflow
+    Properties:
+      Name: !Sub 'netra/${Stage}/model/openrouter'
+      Description: >-
+        Comma-separated OpenRouter API keys used as a reliability failover pool.
+        Set out of band; never stored in source control.
+
+  CreateInvestigationFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeployWorkflow
+    Properties:
+      FunctionName: !Sub 'netra-${Stage}-create-investigation'
+      CodeUri: ../services/orchestrator/dist
+      Handler: createInvestigation.handler
+      Role: !Ref LambdaRoleArn
+      Environment:
+        Variables:
+          NETRA_TABLE_NAME: !Ref InvestigationsTable
+
+  ConfirmOutcomeFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeployWorkflow
+    Properties:
+      FunctionName: !Sub 'netra-${Stage}-confirm-outcome'
+      CodeUri: ../services/orchestrator/dist
+      Handler: confirmOutcome.handler
+      Role: !Ref LambdaRoleArn
+      Environment:
+        Variables:
+          NETRA_TABLE_NAME: !Ref InvestigationsTable
+
+  RecordFailureFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeployWorkflow
+    Properties:
+      FunctionName: !Sub 'netra-${Stage}-record-failure'
+      CodeUri: ../services/orchestrator/dist
+      Handler: recordFailure.handler
+      Role: !Ref LambdaRoleArn
+      Environment:
+        Variables:
+          NETRA_TABLE_NAME: !Ref InvestigationsTable
+
+  InvestigationStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployWorkflow
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/states/netra-${Stage}-investigation'
+      RetentionInDays: !Ref LogRetentionDays
+
+  InvestigationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Condition: DeployWorkflow
+    Properties:
+      Name: !Sub 'netra-${Stage}-investigation'
+      Type: STANDARD
+      Role: !Ref StateMachineRoleArn
+      DefinitionUri: step-functions/investigation.asl.json
+      DefinitionSubstitutions:
+        CreateInvestigationFunctionArn: !GetAtt CreateInvestigationFunction.Arn
+        ConfirmOutcomeFunctionArn: !GetAtt ConfirmOutcomeFunction.Arn
+        RecordFailureFunctionArn: !GetAtt RecordFailureFunction.Arn
+        ClusterArn: !GetAtt InvestigationCluster.Arn
+        TaskDefinitionArn: !Ref InvestigatorTaskDefinition
+        SecurityGroupId: !GetAtt InvestigatorSecurityGroup.GroupId
+        SubnetIds: !Sub
+          - '["${One}","${Two}","${Three}"]'
+          - One: !Select [0, !Ref VpcSubnetIds]
+            Two: !Select [1, !Ref VpcSubnetIds]
+            Three: !Select [2, !Ref VpcSubnetIds]
+      Logging:
+        Level: ALL
+        IncludeExecutionData: false   # Execution data can carry change detail.
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt InvestigationStateMachineLogGroup.Arn
+      Tracing:
+        Enabled: true
+
+  # The link between the webhook and the workflow.
+  CodeChangeRule:
+    Type: AWS::Events::Rule
+    Condition: DeployWorkflow
+    Properties:
+      Name: !Sub 'netra-${Stage}-code-change'
+      Description: Starts an investigation when a code change is published.
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source:
+          - netra.github
+        detail-type:
+          - Netra.CodeChange
+      State: ENABLED
+      Targets:
+        - Id: investigation-state-machine
+          Arn: !Ref InvestigationStateMachine
+          RoleArn: !Ref EventsRoleArn
+          # A change that cannot be delivered to the workflow is kept rather
+          # than dropped, so nothing is lost while the workflow is unhealthy.
+          DeadLetterConfig:
+            Arn: !GetAtt CodeChangeDeadLetterQueue.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 4
+            MaximumEventAgeInSeconds: 3600
+
+  CodeChangeDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Condition: DeployWorkflow
+    Properties:
+      QueueName: !Sub 'netra-${Stage}-code-change-dlq'
+      MessageRetentionPeriod: 1209600   # 14 days
+      SqsManagedSseEnabled: true
+
+  CodeChangeDeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: DeployWorkflow
+    Properties:
+      Queues: [!Ref CodeChangeDeadLetterQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt CodeChangeDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt CodeChangeRule.Arn
+
   # --------------------------------------------------------------------------
   # Observability
   # --------------------------------------------------------------------------
@@ -279,3 +559,18 @@ Outputs:
   EventBusArn:
     Description: Needed when granting the webhook role events:PutEvents.
     Value: !GetAtt EventBus.Arn
+
+  InvestigationStateMachineArn:
+    Condition: DeployWorkflow
+    Description: The investigation workflow.
+    Value: !Ref InvestigationStateMachine
+
+  InvestigationsTableName:
+    Condition: DeployWorkflow
+    Description: DynamoDB table holding investigations and their results.
+    Value: !Ref InvestigationsTable
+
+  ModelProviderSecretName:
+    Condition: DeployWorkflow
+    Description: Secret holding the OpenRouter keys; populate it out of band.
+    Value: !Sub 'netra/${Stage}/model/openrouter'
