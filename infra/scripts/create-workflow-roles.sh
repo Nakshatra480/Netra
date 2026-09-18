@@ -9,6 +9,12 @@
 # Every policy is scoped to named resources. There are no wildcards on
 # resources that matter, and no role can read a secret it does not need.
 #
+# All policies are inline. The AWS managed equivalents
+# (AWSLambdaBasicExecutionRole, AmazonECSTaskExecutionRolePolicy) would need
+# iam:AttachRolePolicy, which PowerUserAccess does not grant -- and the inline
+# versions below are scoped to named log groups and one ECR repository rather
+# than to every log group and every repository in the account.
+#
 # Usage: create-workflow-roles.sh [stage]
 set -euo pipefail
 
@@ -51,9 +57,14 @@ echo "Netra ${STAGE} workflow roles in ${REGION} (account ${ACCOUNT})"
 # 1. Lifecycle Lambdas: read and write investigation records, and log.
 # ---------------------------------------------------------------------------
 make_role "netra-lambda-role" "lambda.amazonaws.com" "investigation lifecycle Lambdas"
-aws iam attach-role-policy --role-name netra-lambda-role \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole \
-  --profile "$PROFILE"
+put_policy netra-lambda-role netra-lambda-logging "$(cat <<JSON
+{"Version":"2012-10-17","Statement":[
+  {"Sid":"WriteOwnLogs","Effect":"Allow",
+   "Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+   "Resource":"arn:aws:logs:${REGION}:${ACCOUNT}:log-group:/aws/lambda/netra-${STAGE}-*"}
+]}
+JSON
+)"
 put_policy netra-lambda-role netra-investigations-access "$(cat <<JSON
 {"Version":"2012-10-17","Statement":[
   {"Sid":"InvestigationRecords","Effect":"Allow",
@@ -67,10 +78,22 @@ JSON
 # 2. ECS agent: pull the image, write logs, resolve the task's secrets.
 #    The agent reads the secrets; the container never has permission to.
 # ---------------------------------------------------------------------------
+# ecr:GetAuthorizationToken admits no resource scope -- AWS requires "*" for it.
+# Every other action below names one repository or one log group.
 make_role "netra-task-execution-role" "ecs-tasks.amazonaws.com" "ECS agent for the investigator task"
-aws iam attach-role-policy --role-name netra-task-execution-role \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy \
-  --profile "$PROFILE"
+put_policy netra-task-execution-role netra-task-startup "$(cat <<JSON
+{"Version":"2012-10-17","Statement":[
+  {"Sid":"AuthenticateToEcr","Effect":"Allow","Action":"ecr:GetAuthorizationToken",
+   "Resource":"*"},
+  {"Sid":"PullTheInvestigatorImage","Effect":"Allow",
+   "Action":["ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],
+   "Resource":"arn:aws:ecr:${REGION}:${ACCOUNT}:repository/netra/investigator"},
+  {"Sid":"WriteTaskLogs","Effect":"Allow",
+   "Action":["logs:CreateLogStream","logs:PutLogEvents"],
+   "Resource":"arn:aws:logs:${REGION}:${ACCOUNT}:log-group:/aws/ecs/netra-${STAGE}-investigator:*"}
+]}
+JSON
+)"
 put_policy netra-task-execution-role netra-task-secrets "$(cat <<JSON
 {"Version":"2012-10-17","Statement":[
   {"Sid":"InjectTaskSecrets","Effect":"Allow","Action":"secretsmanager:GetSecretValue",
