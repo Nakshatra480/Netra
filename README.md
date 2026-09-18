@@ -39,9 +39,10 @@ long list of partially-implemented scanners.
 | Human approval boundary | ✅ working |
 | Remediation and post-fix verification | ✅ working |
 | Demo mode against a real fixture repository | ✅ working |
-| Strands agent over Amazon Bedrock | ⚠️ implemented; Bedrock invoke blocked by AWS account verification |
+| Provider-agnostic model router (OpenRouter → Ollama → deterministic) | ✅ working |
+| Token/context optimizer | ✅ working |
+| Amazon Cognito authentication | ✅ implemented; needs a user pool to sign in |
 | GitHub App and webhooks | ⛔ not built — needs a GitHub App |
-| Firebase authentication | ⚠️ implemented; needs project configuration |
 | AWS deployment (SAM) | ⛔ not built yet |
 
 Nothing in the table is simulated. Where something is unavailable, the product
@@ -56,20 +57,119 @@ This is the part worth understanding.
 **A language model may propose a consequence. Only deterministic code may mark it
 verified.**
 
-* The agent (`services/investigator/netra_investigator/agent.py`) investigates
-  with structured tools and returns a short reviewer-facing narrative plus the
-  hypotheses it wants checked. It cannot set a verification status, and its
-  private reasoning is discarded at the parse boundary — it is never emitted,
-  stored, or displayed.
+* The agent (`services/investigator/netra_investigator/agent.py`) receives the
+  facts deterministic analysis already established and explains what they mean
+  for a reviewer. It cannot set a verification status, an out-of-range severity
+  is dropped rather than coerced, and its private reasoning is discarded at the
+  parse boundary — never emitted, stored or displayed.
 * The analyzer (`analyzers/secret_flow.py`) re-derives the exposure from the
   repository independently of anything the model said. It is what produces
   `VERIFIED`.
 * If the model contradicts what was proven, the deterministic description wins.
-  If Bedrock is unavailable, the investigation continues and the UI states that
-  the model was unavailable.
+  If no model is available, the investigation continues and the UI says
+  `AI unavailable — deterministic analysis` rather than implying a model ran.
 
 Confidence is derived from verification status. It is never a number a model
 chose.
+
+---
+
+## AI architecture
+
+Netra uses a **provider-agnostic model router**. OpenRouter provides the
+preferred remote inference path for capable models such as Claude, while Ollama
+provides a local fallback when remote inference is unavailable. Deterministic
+analysis remains available independently of AI.
+
+```
+              investigation
+                    │
+         deterministic analysis          ← decides what is true
+                    │
+           context optimizer             ← decides what the model sees
+                    │
+              model router
+              /            \
+     OpenRouter             Ollama
+   (allowlisted model)   (local capable model)
+              \            /
+            deterministic-only
+```
+
+The router owns provider selection, failover, budgets and usage accounting. The
+UI always shows the path that actually ran:
+
+```
+OpenRouter · Claude Sonnet 4.5          Context 203 tokens · 1 turn · $0.0052
+Ollama · qwen2.5-coder:7b               Fell back: all OpenRouter credentials …
+AI unavailable — deterministic analysis
+```
+
+### Model selection
+
+Models come from a **server-side allowlist**, never from user input or from a
+model. Three tiers exist so the strongest model is spent where it matters:
+
+| Tier | Used for |
+|---|---|
+| `DEEP` | complex blast-radius reasoning; a change touching many files or reaching a secret by several routes |
+| `STANDARD` | ordinary investigation |
+| `FAST` | short, well-bounded interpretation |
+
+Escalation is earned: a deterministic prefilter decides the tier, so the most
+capable model is not the default.
+
+### Credential pool
+
+Several authorized OpenRouter keys can be configured as a **reliability
+failover pool**. This is not a way around anyone's limits — each account is used
+within its own allowance:
+
+* a key that reports a rate limit is rested with growing backoff, not hammered;
+* a key whose budget is exhausted is retired rather than retried;
+* when no authorized capacity remains, Netra falls back or degrades. It never
+  loops.
+
+Keys are held as non-reversible fingerprints (`key_38e99936`) everywhere they
+are named, so health can be displayed without the secret existing outside the
+provider process.
+
+### Ollama is a local fallback only
+
+Netra does **not** deploy Ollama to AWS. A hosted GPU runtime would cost more
+than the rest of the system combined, for a path that is rarely taken. In
+production, OpenRouter is the remote inference path and deterministic-only is
+the fallback; Ollama serves local development and demos.
+
+```bash
+netra-investigate doctor   # what is configured, installed and reachable
+netra-investigate smoke    # one minimal real request; prints safe metadata only
+```
+
+---
+
+## Token efficiency
+
+Token efficiency is treated as a product requirement, not a tuning detail. The
+goal is maximum investigation quality per token, so Netra **never sends a
+repository to a model**.
+
+| Technique | What it does |
+|---|---|
+| **Deterministic-first** | Analysis runs before the model; its compact result is the only context the model receives |
+| **Prefilter** | When there is no credential flow to interpret, no provider is contacted at all |
+| **Diff-first** | Context starts from the change, not the tree |
+| **Deduplication** | Every fragment is hashed; a fragment already sent is never repeated |
+| **Summarization** | Long output is reduced to signal-carrying lines, with security-relevant lines preserved verbatim and elision marked |
+| **Budgets** | Hard ceilings on turns, input tokens, output tokens, total tokens and cost |
+| **Caching** | Deterministic results are content-addressed, so unchanged content is not recomputed |
+
+Measured on the demo investigation: **203 tokens of context, one model turn, no
+tool calls** — because the deterministic context was already sufficient.
+
+Reaching a limit ends the *model's* participation, not the investigation:
+deterministic analysis still produces the verified finding, and the UI says the
+model stopped early.
 
 ---
 
@@ -160,7 +260,8 @@ infra/                    AWS SAM templates
 
 ## Local development
 
-Requirements: Node 20+, pnpm, Python 3.12, Docker, AWS CLI (for Bedrock).
+Requirements: Node 20+, pnpm, Python 3.12, Docker. No model provider is
+required — the demo works without one, and says so.
 
 ```bash
 pnpm install
@@ -177,6 +278,12 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 cd ../..
 
 cp .env.example .env     # fill in what you have; the demo needs none of it
+
+# Optional: enable AI interpretation
+#   OPENROUTER_API_KEYS=sk-or-v1-...      (remote, preferred)
+#   ollama pull qwen2.5-coder:7b          (local fallback)
+# Check what is reachable:
+cd services/investigator && .venv/bin/python -m netra_investigator doctor; cd ../..
 
 pnpm --filter @netra/api dev     # http://localhost:8787
 pnpm --filter @netra/web dev     # http://localhost:5173
@@ -220,16 +327,21 @@ model.
   wrong one.
 * **Remediation is a bounded revert.** Netra can only undo lines the change
   added. It does not write new code.
-* **Bedrock invoke is currently blocked** on this AWS account pending
-  verification, so investigations run deterministic-only and say so.
 * **GitHub integration is not built**, so changes enter through demo mode rather
   than a webhook.
+* **No capable Ollama model is installed here**, so the local fallback reports
+  itself unavailable rather than using an embedding model. `ollama pull
+  qwen2.5-coder:7b` enables it.
+* **AWS deployment is not built yet.** Cognito, API Gateway, Lambda,
+  EventBridge, Step Functions, Fargate, DynamoDB and S3 are the target
+  architecture; today the system runs locally.
 
 ---
 
 ## Credits
 
 Built with React, Vite, Tailwind CSS, React Flow, xterm.js, Framer Motion,
-Fastify, Zod, Strands Agents, Amazon Bedrock, Docker and ripgrep.
+Fastify, Zod, Docker and ripgrep. Model inference through OpenRouter and Ollama.
+Authentication with Amazon Cognito.
 
 Developed with Claude Code (Claude Opus 5) as a pair-programming assistant.

@@ -21,6 +21,7 @@ from .analyzers.graph import build_graph
 from .analyzers.remediation import RemediationPlan, RemediationUnavailable, plan_remediation
 from .analyzers.secret_flow import SecretFlowAnalyzer, SecretFlowReport
 from .config import InvestigatorConfig
+from .context import prefilter
 from .events import EventEmitter, new_id
 from .sandbox import DockerSandbox, SandboxError, SandboxLimits
 from .tools import InvestigationTools, ToolCallRecord
@@ -53,6 +54,8 @@ class InvestigationOutcome:
     action: dict[str, Any] | None = None
     failure_reason: str | None = None
     model_used: bool = False
+    #: Which provider and model produced the narrative. Never contains secrets.
+    model_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def run_investigation(
@@ -95,8 +98,12 @@ def _run(
         emitter.activity_completed(activity, "Workspace ready: no network, read-only, non-root")
         tools = InvestigationTools(sandbox, emitter, request.base_sha, request.head_sha)
 
-        hypothesis = _investigate_phase(request, emitter, tools, cfg)
-        report, finding, evidence = _evidence_phase(request, emitter, tools)
+        # Within INVESTIGATING, deterministic analysis runs before the model:
+        # it decides what is true, and its compact result is the only context
+        # the model is given. That ordering is the trust model and the token
+        # strategy at once.
+        report, finding, hypothesis = _investigate_phase(request, emitter, tools, cfg)
+        evidence = _evidence_phase(emitter, tools, report, finding)
         verification = _verify_phase(emitter, tools, report, finding)
         graph = _impact_phase(emitter, report, finding, evidence)
         outcome = _recommend_phase(
@@ -111,9 +118,24 @@ def _investigate_phase(
     emitter: EventEmitter,
     tools: InvestigationTools,
     cfg: InvestigatorConfig,
-) -> AgentHypothesis:
+) -> tuple[SecretFlowReport, dict[str, Any] | None, AgentHypothesis]:
+    """Establish the facts, then ask a model what they mean."""
     emitter.status_changed("INVESTIGATING")
-    activity = emitter.activity_started("Investigating the change with Amazon Bedrock")
+
+    trace = emitter.activity_started("Tracing credential flow through the repository")
+    report = SecretFlowAnalyzer(tools).analyze()
+    finding = build_finding(request.investigation_id, report)
+
+    if finding is None:
+        emitter.activity_completed(trace, "No credential reaches a published context")
+    else:
+        emitter.activity_completed(
+            trace,
+            f"Traced {len(report.exposure_paths)} exposure path(s) for "
+            f"{', '.join(report.exposed_secrets)}",
+        )
+
+    activity = emitter.activity_started("Interpreting the change")
 
     description = (
         f"Repository: {request.repository_full_name}\n"
@@ -121,7 +143,22 @@ def _investigate_phase(
         f"Base commit: {request.base_sha[:12]}\n"
         f"Head commit: {request.head_sha[:12]}"
     )
-    hypothesis = investigate(tools, cfg, description)
+
+    # The prefilter decides whether a model is worth invoking at all, and how
+    # capable a model the change deserves.
+    decision = prefilter(
+        changed_file_count=len(report.changed_files),
+        secrets_introduced=len(report.secrets_introduced),
+        exposure_paths=len(report.exposure_paths),
+        bundler_inlined=len(report.inlined_by_bundler),
+    )
+    hypothesis = investigate(
+        tools,
+        cfg,
+        description,
+        findings_context=_findings_context(report, finding),
+        decision=decision,
+    )
 
     if hypothesis.model_unavailable:
         # Said plainly rather than hidden: the user should know which parts of
@@ -132,36 +169,63 @@ def _investigate_phase(
             "Continuing with deterministic analysis only.",
         )
     else:
-        emitter.activity_completed(activity, "Model investigation complete")
-    return hypothesis
+        emitter.activity_completed(
+            activity,
+            f"{hypothesis.provider} · {hypothesis.model_label} interpreted the change "
+            f"({hypothesis.metadata.get('estimatedTokens', 0):,} context tokens, "
+            f"{hypothesis.metadata.get('calls', 0)} model turn"
+            f"{'' if hypothesis.metadata.get('calls') == 1 else 's'})",
+        )
+    return report, finding, hypothesis
+
+
+def _findings_context(report: SecretFlowReport, finding: dict[str, Any] | None) -> str:
+    """The compact, structured result of deterministic analysis.
+
+    This is what replaces sending the repository: a few hundred tokens of
+    established fact rather than thousands of tokens of source.
+    """
+    if finding is None:
+        return "Deterministic analysis found no credential flow."
+
+    lines = [
+        f"Finding: {finding['title']}",
+        f"Severity (deterministic): {finding['severity']}",
+        f"Credentials involved: {', '.join(report.exposed_secrets)}",
+        f"Changed files: {', '.join(report.changed_files[:12])}",
+    ]
+    if report.inlined_by_bundler and report.surface:
+        lines.append(
+            f"Bundler {report.surface.config_file} inlines: "
+            f"{', '.join(report.inlined_by_bundler)}"
+        )
+    for path in report.exposure_paths[:5]:
+        lines.append(f"Traced path: {' -> '.join(path.hops)} reads {path.secret}")
+    return "\n".join(lines)
 
 
 def _evidence_phase(
-    request: InvestigationRequest,
     emitter: EventEmitter,
     tools: InvestigationTools,
-) -> tuple[SecretFlowReport, dict[str, Any] | None, list[dict[str, Any]]]:
+    report: SecretFlowReport,
+    finding: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Publish the evidence chain supporting the finding."""
     emitter.status_changed("EVIDENCE_COLLECTION")
-    activity = emitter.activity_started("Tracing credential flow through the repository")
-
-    report = SecretFlowAnalyzer(tools).analyze()
-    finding = build_finding(request.investigation_id, report)
-
     if finding is None:
-        emitter.activity_completed(activity, "No credential reaches a published context")
-        return report, None, []
+        return []
 
-    emitter.activity_completed(
-        activity,
-        f"Traced {len(report.exposure_paths)} exposure path(s) for "
-        f"{', '.join(report.exposed_secrets)}",
-    )
+    activity = emitter.activity_started("Collecting evidence")
     emitter.finding_detected(finding)
 
     evidence = build_evidence(finding["id"], report, command_for=_commands_by_tool(tools.calls))
     for item in evidence:
         emitter.evidence_found(item)
-    return report, finding, evidence
+
+    emitter.activity_completed(
+        activity, f"{len(evidence)} evidence item(s) recorded"
+    )
+    return evidence
 
 
 def _verify_phase(
@@ -233,6 +297,7 @@ def _recommend_phase(
             severity="INFO",
             graph=graph,
             model_used=not hypothesis.model_unavailable,
+            model_metadata=hypothesis.to_metadata(),
         )
 
     summary = _summary_for(finding, hypothesis)
@@ -254,6 +319,7 @@ def _recommend_phase(
             verifications=[verification] if verification else [],
             graph=graph,
             model_used=not hypothesis.model_unavailable,
+            model_metadata=hypothesis.to_metadata(),
         )
 
     emitter.activity_completed(
@@ -287,6 +353,7 @@ def _recommend_phase(
         remediation=remediation,
         action=action,
         model_used=not hypothesis.model_unavailable,
+        model_metadata=hypothesis.to_metadata(),
     )
 
 

@@ -3,11 +3,10 @@ name = "netra-investigator"
 version = "0.1.0"
 description = "Netra investigation engine: controlled repository analysis in an isolated sandbox."
 requires-python = ">=3.12"
-dependencies = [
-  "pydantic>=2.9",
-  "boto3>=1.35",
-  "strands-agents>=0.1.0",
-]
+# The engine deliberately has no vendor SDK dependency: the model gateway is
+# reached over plain HTTP through the provider abstraction, and AWS access is
+# the responsibility of the services that own it.
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
@@ -34,7 +33,8 @@ ignore = ["S603", "S607"]
 [tool.ruff.lint.per-file-ignores]
 # S101: assertions are the point of a test.
 # S105/S108: credential *names* and container paths in fixtures are not secrets.
-"tests/*" = ["S101", "S105", "S108"]
+# ARG002: test doubles must match the real signature they stand in for.
+"tests/*" = ["S101", "S105", "S108", "ARG002"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

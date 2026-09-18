@@ -76,9 +76,18 @@ async function request<T>(
 
 export const api = {
   health: () =>
-    request<{ status: string; firebaseConfigured: boolean; demoModeEnabled: boolean }>(
+    request<{ status: string; cognitoConfigured: boolean; demoModeEnabled: boolean }>(
       '/api/health',
     ),
+
+  /**
+   * Return the caller's workspace, creating it on first sign-in.
+   *
+   * The server derives the owner from the verified token, so the workspace a
+   * caller receives is always their own.
+   */
+  ensureWorkspace: (session: Session) =>
+    request<Workspace>('/api/workspaces/mine', { method: 'POST', session }),
 
   startDemoSession: () =>
     request<{ token: string; workspace: Workspace }>('/api/demo/session', { method: 'POST' }),

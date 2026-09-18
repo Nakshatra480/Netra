@@ -36,7 +36,13 @@ export interface Store {
     patch: Partial<
       Pick<
         Investigation,
-        'status' | 'severity' | 'summary' | 'failureReason' | 'completedAt' | 'changedFiles'
+        | 'status'
+        | 'severity'
+        | 'summary'
+        | 'failureReason'
+        | 'completedAt'
+        | 'changedFiles'
+        | 'modelProvenance'
       >
     >,
   ): Promise<Investigation>;

@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--repository", required=True)
     run.add_argument("--title", default="")
 
+    sub.add_parser("doctor", help="report model provider availability")
+    sub.add_parser("smoke", help="make one minimal real model request")
+
     fix = sub.add_parser("remediate", help="apply an approved remediation and re-verify")
     fix.add_argument("--investigation-id", required=True)
     fix.add_argument("--reference", required=True)
@@ -60,6 +63,16 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     config = InvestigatorConfig.from_env()
+
+    if args.command == "doctor":
+        from .diagnostics import doctor
+
+        return doctor(config)
+    if args.command == "smoke":
+        from .diagnostics import smoke
+
+        return smoke(config)
+
     emit = ndjson_sink()
     emitter = EventEmitter(args.investigation_id, emit)
 
