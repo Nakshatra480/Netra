@@ -128,6 +128,9 @@
       "Comment": "Success is decided by the stored record, not by the task exiting zero.",
       "Type": "Task",
       "Resource": "${ConfirmOutcomeFunctionArn}",
+      "Parameters": {
+        "investigationId.$": "$.investigation.investigationId"
+      },
       "ResultPath": "$.outcome",
       "Retry": [
         {

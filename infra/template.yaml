@@ -47,6 +47,16 @@ Parameters:
     Default: ''
     Description: Role EventBridge assumes to start a state machine execution.
 
+  ModelSecretPopulated:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether netra/<stage>/model/openrouter holds a value. A model is optional:
+      with none, investigations run deterministic-only and say so. The ECS agent
+      cannot resolve a secret that has no value, so the task only references it
+      once it has been populated.
+
   InvestigatorImageUri:
     Type: String
     Default: ''
@@ -78,6 +88,7 @@ Conditions:
   UseSuppliedRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
   # The investigation workflow only deploys once its roles and image exist, so
   # the webhook stack stays deployable on its own.
+  HasModelSecret: !Equals [!Ref ModelSecretPopulated, 'true']
   DeployWorkflow: !And
     - !Not [!Equals [!Ref LambdaRoleArn, '']]
     - !Not [!Equals [!Ref StateMachineRoleArn, '']]
@@ -345,11 +356,19 @@ Resources:
               Value: !Ref 'AWS::Region'
           # Resolved by the ECS agent at start time, so no secret value appears
           # in the task definition or in an API response that describes it.
-          Secrets:
-            - Name: NETRA_GITHUB_APP_SECRET
-              ValueFrom: !Ref GitHubAppSecret
-            - Name: OPENROUTER_API_KEYS
-              ValueFrom: !Ref ModelProviderSecret
+          #
+          # The model secret is referenced only once it holds a value: ECS
+          # fails a task that cannot resolve a secret, and refusing to start
+          # over an optional dependency would turn "no model configured" into
+          # "no investigation at all".
+          Secrets: !If
+            - HasModelSecret
+            - - Name: NETRA_GITHUB_APP_SECRET
+                ValueFrom: !Ref GitHubAppSecret
+              - Name: OPENROUTER_API_KEYS
+                ValueFrom: !Ref ModelProviderSecret
+            - - Name: NETRA_GITHUB_APP_SECRET
+                ValueFrom: !Ref GitHubAppSecret
           LogConfiguration:
             LogDriver: awslogs
             Options:

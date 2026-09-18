@@ -252,3 +252,39 @@ describe('recording a failure', () => {
     await expect(markFailed('inv_1', 'anything')).resolves.toBeUndefined();
   });
 });
+
+describe('failure reasons a person can act on', () => {
+  it('extracts the stopped reason from an ECS task description', () => {
+    // ECS reports a task failure as the entire task object; the useful
+    // sentence is buried among ENIs and ARNs.
+    const cause = JSON.stringify({
+      Attachments: [{ Type: 'eni', Details: [{ Name: 'subnetId', Value: 'subnet-x' }] }],
+      StoppedReason:
+        'ResourceInitializationError: unable to pull secrets or registry auth',
+      StopCode: 'TaskFailedToStart',
+      Containers: [{ ExitCode: null }],
+    });
+
+    const described = describeFailure({ Error: 'States.TaskFailed', Cause: cause });
+    expect(described).toContain('ResourceInitializationError');
+    expect(described).not.toContain('subnet-x');
+    expect(described).not.toContain('Attachments');
+  });
+
+  it('includes the container reason when ECS gives one', () => {
+    const cause = JSON.stringify({
+      StoppedReason: 'Essential container in task exited',
+      Containers: [{ Reason: 'OutOfMemoryError', ExitCode: 137 }],
+    });
+    expect(describeFailure({ Error: 'States.TaskFailed', Cause: cause })).toContain(
+      'OutOfMemoryError',
+    );
+  });
+
+  it('is bounded, so one failure cannot fill the record', () => {
+    const cause = JSON.stringify({ StoppedReason: 'x'.repeat(5000) });
+    expect(describeFailure({ Error: 'States.TaskFailed', Cause: cause }).length).toBeLessThanOrEqual(
+      500,
+    );
+  });
+});
