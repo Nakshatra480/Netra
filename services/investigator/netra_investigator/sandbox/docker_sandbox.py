@@ -83,10 +83,14 @@ class DockerSandbox:
         *,
         image: str = DEFAULT_IMAGE,
         limits: SandboxLimits | None = None,
+        checkout: str | None = None,
     ) -> None:
         self._source_repo = repo_path
         self._image = image
         self._limits = limits or SandboxLimits()
+        #: Commit the ephemeral workspace is pinned to. Analysis must describe a
+        #: specific commit, not whatever happened to be in the working tree.
+        self._checkout = checkout
         self._container_id: str | None = None
         self._workdir: Path | None = None
 
@@ -116,6 +120,22 @@ class DockerSandbox:
         # An ephemeral copy: analysis can never mutate the caller's repository,
         # and the copy is removed with the container.
         shutil.copytree(self._source_repo, workspace, symlinks=False)
+
+        if self._checkout is not None:
+            # Pin the copy before it is mounted, because the mount is read-only
+            # and nothing inside the container may alter the tree.
+            checkout = subprocess.run(
+                ["git", "-C", str(workspace), "checkout", "--quiet", "--detach", self._checkout],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if checkout.returncode != 0:
+                self._cleanup_workdir()
+                raise SandboxError(
+                    f"could not check out {self._checkout}: {checkout.stderr.strip()}"
+                )
 
         name = f"netra-inv-{uuid.uuid4().hex[:12]}"
         argv = [
