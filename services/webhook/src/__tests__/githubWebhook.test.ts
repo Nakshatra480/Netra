@@ -18,6 +18,20 @@ vi.mock('@aws-sdk/client-secrets-manager', () => ({
   },
 }));
 
+const claim = vi.fn();
+const release = vi.fn();
+vi.mock('../deliveries.js', () => ({
+  claimDelivery: (...args: unknown[]) => claim(...args),
+  releaseDelivery: (...args: unknown[]) => release(...args),
+  DeliveryStoreUnavailable: class extends Error {},
+}));
+
+const publish = vi.fn();
+vi.mock('../publisher.js', () => ({
+  publishCodeChange: (...args: unknown[]) => publish(...args),
+  PublishFailed: class extends Error {},
+}));
+
 process.env.GITHUB_WEBHOOK_SECRET_ARN = 'arn:aws:secretsmanager:eu-north-1:123:secret:test';
 
 type Handler = (event: never) => Promise<unknown>;
@@ -58,7 +72,15 @@ function delivery(
   } as never;
 }
 
-const PUSH_BODY = JSON.stringify({ repository: { full_name: 'orbital/payments' } });
+const PUSH_BODY = JSON.stringify({
+  ref: 'refs/heads/main',
+  before: 'a'.repeat(40),
+  after: 'b'.repeat(40),
+  repository: { full_name: 'orbital/payments', id: 1, default_branch: 'main', private: true },
+  installation: { id: 99 },
+  head_commit: { message: 'a change' },
+  pusher: { name: 'priya' },
+});
 
 function parse(result: unknown) {
   const response = result as { statusCode: number; body: string };
@@ -70,6 +92,12 @@ describe('GitHub webhook receiver', () => {
     send.mockReset();
     send.mockResolvedValue({ SecretString: JSON.stringify({ webhookSecret: TEST_SECRET }) });
     vi.useRealTimers();
+    claim.mockReset();
+    claim.mockResolvedValue('CLAIMED');
+    release.mockReset();
+    release.mockResolvedValue(true);
+    publish.mockReset();
+    publish.mockResolvedValue('event-id-1');
     handler = await freshHandler();
   });
 
@@ -135,7 +163,18 @@ describe('GitHub webhook receiver', () => {
     });
 
     it('handles pull_request as well as push', async () => {
-      const { status } = parse(await handler(delivery(PUSH_BODY, { event: 'pull_request' })));
+      const body = JSON.stringify({
+        action: 'opened',
+        number: 182,
+        repository: { full_name: 'orbital/payments', id: 1, default_branch: 'main' },
+        pull_request: {
+          title: 'Enable direct receipt upload',
+          head: { sha: 'c'.repeat(40), ref: 'feature/upload' },
+          base: { sha: 'd'.repeat(40) },
+          user: { login: 'priya' },
+        },
+      });
+      const { status } = parse(await handler(delivery(body, { event: 'pull_request' })));
       expect(status).toBe(202);
     });
 
@@ -190,5 +229,97 @@ describe('GitHub webhook receiver', () => {
       // Metadata that helps an operator is fine, and expected.
       expect(output).toContain('test-delivery-id');
     });
+  });
+});
+
+
+describe('delivery idempotency and publishing', () => {
+  beforeEach(async () => {
+    send.mockReset();
+    send.mockResolvedValue({ SecretString: JSON.stringify({ webhookSecret: TEST_SECRET }) });
+    claim.mockReset();
+    claim.mockResolvedValue('CLAIMED');
+    release.mockReset();
+    release.mockResolvedValue(true);
+    publish.mockReset();
+    publish.mockResolvedValue('event-id-1');
+    handler = await freshHandler();
+  });
+
+  it('claims the delivery before publishing it', async () => {
+    const { status } = parse(await handler(delivery(PUSH_BODY)));
+    expect(status).toBe(202);
+
+    // Order matters: publishing first would let a retry duplicate the work.
+    expect(claim).toHaveBeenCalledWith('test-delivery-id', {
+      event: 'push',
+      repository: 'orbital/payments',
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes the extracted change, not the raw payload', async () => {
+    await handler(delivery(PUSH_BODY));
+    const event = publish.mock.calls[0]![0] as Record<string, never>;
+
+    expect(event).toMatchObject({
+      deliveryId: 'test-delivery-id',
+      source: 'push',
+      installationId: 99,
+    });
+    expect((event as never as { change: { commitSha: string } }).change.commitSha).toBe(
+      'b'.repeat(40),
+    );
+  });
+
+  it('ignores a duplicate delivery without publishing again', async () => {
+    claim.mockResolvedValue('DUPLICATE');
+    const { status, body } = parse(await handler(delivery(PUSH_BODY)));
+
+    expect(status).toBe(200);
+    expect(body.duplicate).toBe(true);
+    // The whole point: a GitHub retry must not start a second investigation.
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('refuses the delivery when the claim store is unreachable', async () => {
+    claim.mockRejectedValue(new Error('DynamoDB unavailable'));
+    const { status } = parse(await handler(delivery(PUSH_BODY)));
+
+    // Without a claim we cannot promise exactly-once, so we do not process it.
+    expect(status).toBe(500);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim when publishing fails, so a retry still works', async () => {
+    publish.mockRejectedValue(new Error('EventBridge unavailable'));
+    const { status } = parse(await handler(delivery(PUSH_BODY)));
+
+    expect(status).toBe(500);
+    // Otherwise the retry would look like a duplicate and the change would be
+    // lost permanently.
+    expect(release).toHaveBeenCalledWith('test-delivery-id');
+  });
+
+  it('does not claim or publish an event it will not investigate', async () => {
+    const closed = JSON.stringify({
+      action: 'closed',
+      number: 1,
+      repository: { full_name: 'orbital/payments' },
+      pull_request: { head: { sha: 'c'.repeat(40) }, base: { sha: 'd'.repeat(40) } },
+    });
+    const { status, body } = parse(await handler(delivery(closed, { event: 'pull_request' })));
+
+    expect(status).toBe(200);
+    expect(body.handled).toBe(false);
+    expect(claim).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a delivery that failed signature verification', async () => {
+    await handler(delivery(PUSH_BODY, { signature: 'sha256=' + 'a'.repeat(64) }));
+    // An unauthenticated caller must not be able to consume delivery ids.
+    expect(claim).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
   });
 });

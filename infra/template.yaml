@@ -72,6 +72,78 @@ Resources:
         # without escaping surprises.
         ExcludePunctuation: true
 
+  # The GitHub App's identity: the App ID and its RSA private key, used to mint
+  # short-lived installation tokens.
+  #
+  # Deliberately a SEPARATE secret from the webhook secret. The webhook receiver
+  # needs only the HMAC secret, and giving it the private key as well would let
+  # a flaw in a public, unauthenticated endpoint reach the credential that can
+  # act on a customer's repositories.
+  #
+  # This resource carries NO value. CloudFormation owns the name, the ARN and
+  # the IAM references; the private key is injected out of band with
+  # `put-secret-value`, so it never enters this template, this repository, or a
+  # CloudFormation change set.
+  GitHubAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'netra/${Stage}/github/app'
+      Description: >-
+        Netra GitHub App credentials as JSON: {"appId","appSlug","privateKey"}.
+        The value is set out of band and is never stored in source control.
+
+  # --------------------------------------------------------------------------
+  # Delivery idempotency and eventing
+  # --------------------------------------------------------------------------
+
+  # GitHub retries a delivery it considers failed, and a retry carries the same
+  # X-GitHub-Delivery id. This table is how "we have already handled this one"
+  # is decided: the first conditional write wins, so two concurrent invocations
+  # cannot both proceed.
+  DeliveriesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'netra-${Stage}-deliveries'
+      BillingMode: PAY_PER_REQUEST     # Webhook traffic is bursty and sparse.
+      AttributeDefinitions:
+        - AttributeName: deliveryId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deliveryId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        # Claims are only useful while GitHub might still retry; a week is far
+        # beyond that, and TTL keeps the table from growing without bound.
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        # Idempotency claims are reconstructible and short-lived; paying to
+        # back them up would buy nothing.
+        PointInTimeRecoveryEnabled: false
+
+  # Decouples "GitHub said something changed" from "Netra investigates it", so
+  # the investigation can be slow, retried or replaced without GitHub waiting.
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub 'netra-${Stage}'
+
+  # Until the investigation workflow exists, published events would vanish with
+  # no trace. This archive keeps them, so the first workflow can be tested
+  # against real deliveries rather than invented ones.
+  EventArchive:
+    Type: AWS::Events::Archive
+    Properties:
+      ArchiveName: !Sub 'netra-${Stage}-changes'
+      SourceArn: !GetAtt EventBus.Arn
+      Description: Code change events, retained so a new consumer can replay them.
+      RetentionDays: 7
+      EventPattern:
+        source:
+          - netra.github
+
   # --------------------------------------------------------------------------
   # Webhook receiver
   # --------------------------------------------------------------------------
@@ -87,6 +159,8 @@ Resources:
       Environment:
         Variables:
           GITHUB_WEBHOOK_SECRET_ARN: !Ref GitHubWebhookSecret
+          NETRA_DELIVERIES_TABLE: !Ref DeliveriesTable
+          NETRA_EVENT_BUS_NAME: !Ref EventBus
       # A supplied role is used as-is; its permissions are the deployer's to
       # manage. Otherwise the stack creates a role that can read exactly one
       # secret and nothing else.
@@ -179,3 +253,29 @@ Outputs:
   WebhookSecretName:
     Description: Secret name, for convenience.
     Value: !Sub 'netra/${Stage}/github/webhook'
+
+  GitHubAppSecretArn:
+    Description: >-
+      Secrets Manager secret holding the GitHub App ID and private key. Created
+      empty; populate it with `aws secretsmanager put-secret-value`.
+    Value: !Ref GitHubAppSecret
+
+  GitHubAppSecretName:
+    Description: GitHub App credentials secret name.
+    Value: !Sub 'netra/${Stage}/github/app'
+
+  DeliveriesTableName:
+    Description: DynamoDB table holding delivery idempotency claims.
+    Value: !Ref DeliveriesTable
+
+  DeliveriesTableArn:
+    Description: Needed when granting the webhook role write access.
+    Value: !GetAtt DeliveriesTable.Arn
+
+  EventBusName:
+    Description: EventBridge bus carrying Netra.CodeChange events.
+    Value: !Ref EventBus
+
+  EventBusArn:
+    Description: Needed when granting the webhook role events:PutEvents.
+    Value: !GetAtt EventBus.Arn
