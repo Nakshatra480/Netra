@@ -10,6 +10,8 @@
     "build": "node build.mjs"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1134.0",
+    "@aws-sdk/client-eventbridge": "^3.1134.0",
     "@aws-sdk/client-secrets-manager": "^3.687.0",
     "@types/aws-lambda": "^8.10.145",
     "@types/node": "^22.9.0",

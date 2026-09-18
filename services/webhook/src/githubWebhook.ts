@@ -1,13 +1,21 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { extractCodeChange } from './changeEvent.js';
+import { claimDelivery, releaseDelivery } from './deliveries.js';
+import { publishCodeChange } from './publisher.js';
 
 /**
  * GitHub webhook receiver.
  *
  * GitHub expects a fast answer and retries anything slow, so this handler does
- * the minimum that cannot be deferred -- verify the signature, then acknowledge
- * -- and leaves the investigation itself to the workflow behind it.
+ * only what cannot be deferred:
+ *
+ *   verify the signature -> claim the delivery -> publish the change -> 202
+ *
+ * The investigation happens behind EventBridge, where it can take as long as it
+ * needs without GitHub ever waiting. Claiming the delivery before publishing is
+ * what stops a GitHub retry becoming a second investigation.
  *
  * The webhook secret lives in AWS Secrets Manager. It is never in source, never
  * in an environment variable, and never logged.
@@ -149,18 +157,68 @@ export async function handler(
     return reply(200, { ok: true, handled: false, event: eventType });
   }
 
-  let repository = 'unknown';
+  let payload: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(body) as { repository?: { full_name?: string } };
-    repository = parsed.repository?.full_name ?? 'unknown';
+    payload = JSON.parse(body) as Record<string, unknown>;
   } catch {
     log('WARN', 'webhook body was not valid JSON', { deliveryId, eventType });
     return reply(400, { error: 'Body is not valid JSON' });
   }
 
-  log('INFO', 'webhook accepted', { deliveryId, eventType, repository });
+  const extracted = extractCodeChange(eventType, payload, deliveryId);
+  if (extracted.kind === 'skip') {
+    // Nothing to investigate, but the delivery was legitimate: acknowledge it
+    // so GitHub does not retry.
+    log('INFO', 'webhook skipped', { deliveryId, eventType, reason: extracted.reason });
+    return reply(200, { ok: true, handled: false, reason: extracted.reason });
+  }
 
-  // Acknowledged now; the investigation is started by the workflow that will be
-  // wired to this handler next. GitHub must not wait for that work.
-  return reply(202, { ok: true, handled: true, deliveryId });
+  const change = extracted.event;
+  const repository = change.repository.fullName;
+
+  // Claim before publishing. A retry of an already-published delivery must not
+  // produce a second investigation.
+  let claim: Awaited<ReturnType<typeof claimDelivery>>;
+  try {
+    claim = await claimDelivery(deliveryId, { event: eventType, repository });
+  } catch (error) {
+    // Without a claim we cannot promise exactly-once, so refuse the delivery
+    // rather than risk duplicate work. GitHub will retry.
+    log('ERROR', 'could not claim the delivery', {
+      deliveryId,
+      eventType,
+      reason: (error as Error).message,
+    });
+    return reply(500, { error: 'Delivery could not be recorded' });
+  }
+
+  if (claim === 'DUPLICATE') {
+    log('INFO', 'webhook duplicate ignored', { deliveryId, eventType, repository });
+    return reply(200, { ok: true, handled: false, duplicate: true, deliveryId });
+  }
+
+  try {
+    const eventId = await publishCodeChange(change);
+    log('INFO', 'change published', {
+      deliveryId,
+      eventType,
+      repository,
+      commitSha: change.change.commitSha.slice(0, 12),
+      pullRequest: change.change.pullRequestNumber ?? undefined,
+      eventId,
+    });
+    return reply(202, { ok: true, handled: true, deliveryId });
+  } catch (error) {
+    // The claim was taken but the work did not go through. Release it, or
+    // GitHub's retry would look like a duplicate and the change would be lost.
+    const released = await releaseDelivery(deliveryId);
+    log('ERROR', 'could not publish the change', {
+      deliveryId,
+      eventType,
+      repository,
+      reason: (error as Error).message,
+      claimReleased: released,
+    });
+    return reply(500, { error: 'Change could not be queued for investigation' });
+  }
 }
