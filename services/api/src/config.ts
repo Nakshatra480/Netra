@@ -41,9 +41,9 @@ const configSchema = z.object({
   eventBusName: z.string().optional(),
   stateMachineArn: z.string().optional(),
 
-  firebaseProjectId: z.string().optional(),
-  firebaseClientEmail: z.string().optional(),
-  firebasePrivateKey: z.string().optional(),
+  /** Cognito user pool backing real sign-in. Absent locally by default. */
+  cognitoUserPoolId: z.string().optional(),
+  cognitoClientId: z.string().optional(),
 
   /** Signing key for demo sessions. Generated per process when unset. */
   demoSessionSecret: z.string().optional(),
@@ -76,9 +76,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     artifactsBucket: env.NETRA_ARTIFACTS_BUCKET,
     eventBusName: env.NETRA_EVENT_BUS_NAME,
     stateMachineArn: env.NETRA_STATE_MACHINE_ARN,
-    firebaseProjectId: env.FIREBASE_PROJECT_ID,
-    firebaseClientEmail: env.FIREBASE_CLIENT_EMAIL,
-    firebasePrivateKey: env.FIREBASE_PRIVATE_KEY,
+    cognitoUserPoolId: env.NETRA_COGNITO_USER_POOL_ID,
+    cognitoClientId: env.NETRA_COGNITO_CLIENT_ID,
     demoSessionSecret: env.NETRA_DEMO_SESSION_SECRET,
     demoModeEnabled: env.VITE_DEMO_MODE_ENABLED,
     investigatorPython: env.NETRA_INVESTIGATOR_PYTHON,
@@ -95,9 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return parsed.data;
 }
 
-/** True when the deployment has everything Firebase token verification needs. */
-export function hasFirebaseCredentials(config: Config): boolean {
-  return Boolean(
-    config.firebaseProjectId && config.firebaseClientEmail && config.firebasePrivateKey,
-  );
+/** True when the deployment has everything Cognito token verification needs. */
+export function hasCognitoConfiguration(config: Config): boolean {
+  return Boolean(config.cognitoUserPoolId && config.cognitoClientId);
 }

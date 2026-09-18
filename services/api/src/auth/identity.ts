@@ -1,19 +1,19 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config } from '../config.js';
-import { hasFirebaseCredentials } from '../config.js';
+import { hasCognitoConfiguration } from '../config.js';
 
 /**
  * Who is making a request.
  *
  * An identity is only ever produced by verifying a token server-side. No route
- * reads a user id from a request body or header, so a client cannot claim to be
- * someone else.
+ * reads a user id from a request body, a header or a query parameter, so a
+ * client cannot claim to be someone else.
  */
 export interface Identity {
   readonly userId: string;
   readonly email: string | null;
   /** Demo identities may only act on their own demo workspace. */
-  readonly kind: 'FIREBASE' | 'DEMO';
+  readonly kind: 'COGNITO' | 'DEMO';
 }
 
 export class AuthError extends Error {
@@ -27,37 +27,48 @@ export interface TokenVerifier {
   verify(token: string): Promise<Identity>;
 }
 
-/** Verifies Firebase ID tokens using the Admin SDK. */
-export class FirebaseTokenVerifier implements TokenVerifier {
-  #auth: import('firebase-admin/auth').Auth | null = null;
+/**
+ * Verifies Amazon Cognito access tokens.
+ *
+ * `aws-jwt-verify` checks the signature against the user pool's JWKS, the
+ * issuer, the audience/client id, the token use and the expiry. The JWKS is
+ * cached in the verifier, so steady-state verification costs no network call.
+ *
+ * In production API Gateway also enforces a JWT authorizer in front of these
+ * routes; verifying again here means the API is not dependent on a single
+ * control, and keeps local development identical to deployed behaviour.
+ */
+export class CognitoTokenVerifier implements TokenVerifier {
+  #verifier: ReturnType<typeof import('aws-jwt-verify').CognitoJwtVerifier.create> | null = null;
 
   constructor(private readonly config: Config) {}
 
-  async #getAuth() {
-    if (this.#auth) return this.#auth;
-    const { initializeApp, cert, getApps } = await import('firebase-admin/app');
-    const { getAuth } = await import('firebase-admin/auth');
-    const app =
-      getApps()[0] ??
-      initializeApp({
-        credential: cert({
-          projectId: this.config.firebaseProjectId!,
-          clientEmail: this.config.firebaseClientEmail!,
-          // Private keys are stored with escaped newlines in environment values.
-          privateKey: this.config.firebasePrivateKey!.replace(/\\n/g, '\n'),
-        }),
-      });
-    this.#auth = getAuth(app);
-    return this.#auth;
+  async #getVerifier() {
+    if (this.#verifier) return this.#verifier;
+    const { CognitoJwtVerifier } = await import('aws-jwt-verify');
+    this.#verifier = CognitoJwtVerifier.create({
+      userPoolId: this.config.cognitoUserPoolId!,
+      clientId: this.config.cognitoClientId!,
+      // Access tokens carry the scopes and are what API Gateway validates.
+      tokenUse: 'access',
+    });
+    return this.#verifier;
   }
 
   async verify(token: string): Promise<Identity> {
     try {
-      const auth = await this.#getAuth();
-      // checkRevoked: a signed-out or disabled user must stop being able to act.
-      const decoded = await auth.verifyIdToken(token, true);
-      return { userId: decoded.uid, email: decoded.email ?? null, kind: 'FIREBASE' };
+      const verifier = await this.#getVerifier();
+      const payload = await verifier.verify(token);
+      const userId = String(payload.sub);
+      if (!userId) throw new AuthError('The token has no subject claim');
+      return {
+        userId,
+        email: typeof payload.email === 'string' ? payload.email : null,
+        kind: 'COGNITO',
+      };
     } catch (error) {
+      // The reason is useful to the caller; the token itself never is, and is
+      // never echoed back or logged.
       throw new AuthError(`Could not verify the identity token: ${(error as Error).message}`);
     }
   }
@@ -111,21 +122,21 @@ export class DemoSessionVerifier implements TokenVerifier {
 }
 
 /**
- * Routes tokens to the verifier that can check them.
+ * Routes a token to the verifier that can check it.
  *
  * Demo tokens carry an explicit scheme so a demo session can never be mistaken
- * for a Firebase identity, or the reverse.
+ * for a real identity, or the reverse.
  */
 export class CompositeVerifier {
   constructor(
     private readonly demo: DemoSessionVerifier,
-    private readonly firebase: TokenVerifier | null,
+    private readonly cognito: TokenVerifier | null,
   ) {}
 
   static create(config: Config): CompositeVerifier {
     return new CompositeVerifier(
       new DemoSessionVerifier(config.demoSessionSecret),
-      hasFirebaseCredentials(config) ? new FirebaseTokenVerifier(config) : null,
+      hasCognitoConfiguration(config) ? new CognitoTokenVerifier(config) : null,
     );
   }
 
@@ -133,8 +144,8 @@ export class CompositeVerifier {
     return this.demo;
   }
 
-  get firebaseConfigured(): boolean {
-    return this.firebase !== null;
+  get cognitoConfigured(): boolean {
+    return this.cognito !== null;
   }
 
   async verifyAuthorizationHeader(header: string | undefined): Promise<Identity> {
@@ -145,11 +156,11 @@ export class CompositeVerifier {
 
     if (scheme === 'Demo') return this.demo.verify(token);
     if (scheme !== 'Bearer') throw new AuthError(`Unsupported authorization scheme: ${scheme}`);
-    if (!this.firebase) {
+    if (!this.cognito) {
       throw new AuthError(
-        'Firebase authentication is not configured on this deployment. Use the demo experience, or configure FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.',
+        'Cognito authentication is not configured on this deployment. Use the demo experience, or set NETRA_COGNITO_USER_POOL_ID and NETRA_COGNITO_CLIENT_ID.',
       );
     }
-    return this.firebase.verify(token);
+    return this.cognito.verify(token);
   }
 }

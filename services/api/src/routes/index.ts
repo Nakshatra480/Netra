@@ -59,7 +59,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
   app.get('/api/health', async () => ({
     status: 'ok',
-    firebaseConfigured: verifier.firebaseConfigured,
+    cognitoConfigured: verifier.cognitoConfigured,
     demoModeEnabled: config.demoModeEnabled,
   }));
 
@@ -89,6 +89,30 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       const workspace = await store.createWorkspace({
         id: newId('wsp'),
         name: body.name,
+        ownerId: identity.userId,
+        createdAt: nowIso(),
+      });
+      return reply.status(201).send(workspace);
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  /**
+   * The caller's own workspace, created on first sign-in.
+   *
+   * Idempotent: a returning user gets the workspace they already own rather
+   * than accumulating a new one per sign-in.
+   */
+  app.post('/api/workspaces/mine', async (request, reply) => {
+    try {
+      const identity = await identify(request.headers.authorization);
+      const existing = await store.listWorkspacesForOwner(identity.userId);
+      if (existing[0]) return reply.send(existing[0]);
+
+      const workspace = await store.createWorkspace({
+        id: newId('wsp'),
+        name: identity.email ? `${identity.email.split('@')[0]}'s workspace` : 'My workspace',
         ownerId: identity.userId,
         createdAt: nowIso(),
       });

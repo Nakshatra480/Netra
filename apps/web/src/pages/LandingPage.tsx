@@ -42,7 +42,7 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
       <header className="mx-auto flex h-16 max-w-6xl items-center gap-2 px-6">
         <ShieldHalf size={18} className="text-[--color-state-active]" />
         <span className="font-semibold tracking-tight">Netra</span>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => navigate('/app')}>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => navigate('/signin')}>
           Sign in
         </Button>
       </header>
@@ -70,7 +70,7 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
               {busy ? 'Starting a real investigation…' : 'Try the live demo'}
               <ArrowRight size={16} />
             </Button>
-            <Button variant="secondary" size="lg" onClick={() => navigate('/app')}>
+            <Button variant="secondary" size="lg" onClick={() => navigate('/signin')}>
               Sign in
             </Button>
           </div>
@@ -130,10 +130,11 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
           ))}
         </section>
 
-        <p className="mt-16 text-xs text-[--color-ink-subtle]">
-          Built on AWS: API Gateway and Lambda receive the change, EventBridge and Step Functions
-          orchestrate the investigation, Amazon Bedrock powers the agent through Strands, and
-          DynamoDB and S3 hold the evidence.
+        <p className="mt-16 max-w-3xl text-xs leading-relaxed text-[--color-ink-subtle]">
+          Netra runs on AWS: Cognito authenticates, API Gateway and Lambda receive the change,
+          EventBridge and Step Functions orchestrate the investigation, Fargate runs the isolated
+          analysis, and DynamoDB and S3 hold the evidence. Claude reaches the investigation through
+          AgentRouter, an external model gateway.
         </p>
       </main>
     </div>

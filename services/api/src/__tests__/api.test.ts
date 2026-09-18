@@ -66,14 +66,14 @@ describe('API', () => {
       expect(response.statusCode).toBe(401);
     });
 
-    it('explains that Firebase is unconfigured rather than failing silently', async () => {
+    it('explains that Cognito is unconfigured rather than failing silently', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/workspaces',
-        headers: { authorization: 'Bearer some-firebase-id-token' },
+        headers: { authorization: 'Bearer some-cognito-access-token' },
       });
       expect(response.statusCode).toBe(401);
-      expect(response.json().error.message).toContain('Firebase authentication is not configured');
+      expect(response.json().error.message).toContain('Cognito authentication is not configured');
     });
   });
 
@@ -151,5 +151,73 @@ describe('API', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json().status).toBe('ok');
     });
+  });
+});
+
+describe('workspace provisioning', () => {
+  let app: FastifyInstance;
+  let store: MemoryStore;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    app = await buildServer({ config, store });
+  });
+
+  async function demoToken() {
+    const response = await app.inject({ method: 'POST', url: '/api/demo/session' });
+    return response.json().token as string;
+  }
+
+  it("returns the caller's own workspace", async () => {
+    // A demo session is issued with a workspace already attached, so this
+    // returns that one rather than provisioning a second.
+    const token = await demoToken();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces/mine',
+      headers: { authorization: `Demo ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ownerId).toMatch(/^demo_/);
+  });
+
+  it('gives different callers different workspaces', async () => {
+    const [first, second] = await Promise.all([demoToken(), demoToken()]);
+    const mine = async (token: string) =>
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/workspaces/mine',
+          headers: { authorization: `Demo ${token}` },
+        })
+      ).json();
+
+    const a = await mine(first);
+    const b = await mine(second);
+    expect(a.id).not.toBe(b.id);
+    expect(a.ownerId).not.toBe(b.ownerId);
+  });
+
+  it('is idempotent for a returning caller', async () => {
+    const token = await demoToken();
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces/mine',
+      headers: { authorization: `Demo ${token}` },
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces/mine',
+      headers: { authorization: `Demo ${token}` },
+    });
+
+    // Signing in twice must not accumulate workspaces.
+    expect(second.statusCode).toBe(200);
+    expect(second.json().id).toBe(first.json().id);
+  });
+
+  it('requires authentication', async () => {
+    const response = await app.inject({ method: 'POST', url: '/api/workspaces/mine' });
+    expect(response.statusCode).toBe(401);
   });
 });
