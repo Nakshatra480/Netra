@@ -1,0 +1,19 @@
+{
+  "name": "netra",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.4.2",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "dev": "pnpm --filter @netra/web dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4",
+    "@types/node": "^22.9.0"
+  }
+}
