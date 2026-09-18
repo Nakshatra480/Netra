@@ -3,8 +3,9 @@
 change -> investigation -> evidence -> verification -> blast radius
        -> human approval -> remediation -> post-fix verification -> resolved
 
-Bedrock is not required: the model contributes narrative, the deterministic
-analyzer contributes the verdict, and this test asserts the verdict.
+No model gateway is required: the model contributes narrative, the
+deterministic analyzer contributes the verdict, and this test asserts the
+verdict.
 """
 
 from pathlib import Path

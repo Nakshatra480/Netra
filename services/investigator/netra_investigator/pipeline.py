@@ -53,6 +53,8 @@ class InvestigationOutcome:
     action: dict[str, Any] | None = None
     failure_reason: str | None = None
     model_used: bool = False
+    #: Which provider and model produced the narrative. Never contains secrets.
+    model_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def run_investigation(
@@ -113,7 +115,7 @@ def _investigate_phase(
     cfg: InvestigatorConfig,
 ) -> AgentHypothesis:
     emitter.status_changed("INVESTIGATING")
-    activity = emitter.activity_started("Investigating the change with Amazon Bedrock")
+    activity = emitter.activity_started("Investigating the change")
 
     description = (
         f"Repository: {request.repository_full_name}\n"
@@ -132,7 +134,12 @@ def _investigate_phase(
             "Continuing with deterministic analysis only.",
         )
     else:
-        emitter.activity_completed(activity, "Model investigation complete")
+        emitter.activity_completed(
+            activity,
+            f"{hypothesis.model_label} investigated the change via "
+            f"{hypothesis.provider} using {hypothesis.tool_calls} tool call"
+            f"{'' if hypothesis.tool_calls == 1 else 's'}",
+        )
     return hypothesis
 
 
@@ -233,6 +240,7 @@ def _recommend_phase(
             severity="INFO",
             graph=graph,
             model_used=not hypothesis.model_unavailable,
+            model_metadata=hypothesis.to_metadata(),
         )
 
     summary = _summary_for(finding, hypothesis)
@@ -254,6 +262,7 @@ def _recommend_phase(
             verifications=[verification] if verification else [],
             graph=graph,
             model_used=not hypothesis.model_unavailable,
+            model_metadata=hypothesis.to_metadata(),
         )
 
     emitter.activity_completed(
@@ -287,6 +296,7 @@ def _recommend_phase(
         remediation=remediation,
         action=action,
         model_used=not hypothesis.model_unavailable,
+        model_metadata=hypothesis.to_metadata(),
     )
 
 
