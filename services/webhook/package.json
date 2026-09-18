@@ -1,0 +1,20 @@
+{
+  "name": "@netra/webhook",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Netra GitHub webhook receiver (AWS Lambda).",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.687.0",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.9.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
