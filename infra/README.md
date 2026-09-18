@@ -38,26 +38,47 @@ aws secretsmanager get-secret-value \
 pnpm --filter @netra/webhook build      # bundle the handler
 cd infra
 sam build
-sam deploy --stack-name netra-prod \
-  --profile netra --region eu-north-1 \
-  --capabilities CAPABILITY_IAM \
-  --resolve-s3 --no-confirm-changeset \
-  --parameter-overrides Stage=prod
+sam deploy --config-env prod            # flags live in samconfig.toml
 ```
 
-### If the deploying principal cannot create IAM roles
+Currently deployed:
 
-An AWS **PowerUserAccess** profile cannot call `iam:CreateRole`, so the stack
-cannot create the Lambda's execution role. Pass a pre-created role instead:
+| | |
+|---|---|
+| Webhook URL | `https://wb5ehfw4yi.execute-api.eu-north-1.amazonaws.com/prod/github/webhook` |
+| Lambda | `netra-prod-github-webhook` |
+| Secret | `netra/prod/github/webhook` |
+| Region | `eu-north-1` |
 
-```bash
-sam deploy ... --parameter-overrides \
-  Stage=prod ExecutionRoleArn=arn:aws:iam::<account>:role/netra-webhook-role
-```
+### IAM, and why the role is passed in
+
+An AWS **PowerUserAccess** profile cannot call `iam:CreateRole`, so the Lambda's
+execution role is created out of band and passed as `ExecutionRoleArn`. The
+deploying principal additionally needs `iam:PassRole` for that role — attaching
+an existing role to a Lambda requires it, and PowerUserAccess does not grant it.
 
 The role needs a Lambda trust policy, `AWSLambdaBasicExecutionRole`, and
-`secretsmanager:GetSecretValue` on the webhook secret. See the repository README
-for the exact policy documents.
+`secretsmanager:GetSecretValue` on the webhook secret.
+
+Every later component (the Fargate task role, the Step Functions role) will need
+`PassRole` too, so it is worth scoping once:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "iam:PassRole",
+  "Resource": "arn:aws:iam::<account>:role/netra-*",
+  "Condition": {
+    "StringEquals": {
+      "iam:PassedToService": [
+        "lambda.amazonaws.com",
+        "ecs-tasks.amazonaws.com",
+        "states.amazonaws.com"
+      ]
+    }
+  }
+}
+```
 
 ## Cost
 
