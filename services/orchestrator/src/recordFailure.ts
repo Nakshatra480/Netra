@@ -29,8 +29,23 @@ export function describeFailure(error: FailureEvent['error']): string {
   const name = error.Error ?? 'Error';
   let detail = error.Cause ?? '';
   try {
-    const parsed = JSON.parse(detail) as { errorMessage?: string; errorType?: string };
-    detail = parsed.errorMessage ?? detail;
+    const parsed = JSON.parse(detail) as {
+      errorMessage?: string;
+      StoppedReason?: string;
+      Containers?: Array<{ Reason?: string; ExitCode?: number }>;
+    };
+
+    // An ECS task failure arrives as the whole task description. Its
+    // StoppedReason is the sentence a person needs; the rest is network
+    // interfaces and ARNs that would bury it on an investigation page.
+    if (parsed.StoppedReason) {
+      const container = parsed.Containers?.[0];
+      detail = container?.Reason
+        ? `${parsed.StoppedReason} (${container.Reason})`
+        : parsed.StoppedReason;
+    } else {
+      detail = parsed.errorMessage ?? detail;
+    }
   } catch {
     // Not JSON; the raw cause is already the message.
   }
