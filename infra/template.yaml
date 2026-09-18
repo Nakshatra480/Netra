@@ -72,6 +72,26 @@ Resources:
         # without escaping surprises.
         ExcludePunctuation: true
 
+  # The GitHub App's identity: the App ID and its RSA private key, used to mint
+  # short-lived installation tokens.
+  #
+  # Deliberately a SEPARATE secret from the webhook secret. The webhook receiver
+  # needs only the HMAC secret, and giving it the private key as well would let
+  # a flaw in a public, unauthenticated endpoint reach the credential that can
+  # act on a customer's repositories.
+  #
+  # This resource carries NO value. CloudFormation owns the name, the ARN and
+  # the IAM references; the private key is injected out of band with
+  # `put-secret-value`, so it never enters this template, this repository, or a
+  # CloudFormation change set.
+  GitHubAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'netra/${Stage}/github/app'
+      Description: >-
+        Netra GitHub App credentials as JSON: {"appId","appSlug","privateKey"}.
+        The value is set out of band and is never stored in source control.
+
   # --------------------------------------------------------------------------
   # Webhook receiver
   # --------------------------------------------------------------------------
@@ -179,3 +199,13 @@ Outputs:
   WebhookSecretName:
     Description: Secret name, for convenience.
     Value: !Sub 'netra/${Stage}/github/webhook'
+
+  GitHubAppSecretArn:
+    Description: >-
+      Secrets Manager secret holding the GitHub App ID and private key. Created
+      empty; populate it with `aws secretsmanager put-secret-value`.
+    Value: !Ref GitHubAppSecret
+
+  GitHubAppSecretName:
+    Description: GitHub App credentials secret name.
+    Value: !Sub 'netra/${Stage}/github/app'
