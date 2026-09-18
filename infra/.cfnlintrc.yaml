@@ -1,0 +1,11 @@
+# cfn-lint configuration.
+templates:
+  - template.yaml
+
+ignore_checks:
+  # E3031 pattern-checks property values without evaluating Conditions, so the
+  # conditionally-absent ExecutionRoleArn (Fn::If -> AWS::NoValue) is read as an
+  # empty string and reported as a malformed role ARN. The parameter has its own
+  # AllowedPattern, which does permit empty, and CloudFormation resolves the
+  # condition correctly at deploy time.
+  - E3031
