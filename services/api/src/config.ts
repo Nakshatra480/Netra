@@ -31,7 +31,8 @@ const configSchema = z.object({
   /** Origins permitted to call the API. Never '*' when credentials are in play. */
   allowedOrigins: z
     .string()
-    .default('http://localhost:5173')
+    // Vite falls back to the next free port, so both are allowed in development.
+    .default('http://localhost:5173,http://localhost:5174')
     .transform((value) => value.split(',').map((o) => o.trim()).filter(Boolean)),
 
   /** DynamoDB table. When absent the API uses its in-memory store. */
