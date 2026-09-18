@@ -1,0 +1,40 @@
+[project]
+name = "netra-investigator"
+version = "0.1.0"
+description = "Netra investigation engine: controlled repository analysis in an isolated sandbox."
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.9",
+  "boto3>=1.35",
+  "strands-agents>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
+
+[project.scripts]
+netra-investigate = "netra_investigator.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ARG", "SIM"]
+# S603: every subprocess call here passes an argv list that the allowlist built;
+#       no string is ever handed to a shell.
+# S607: `docker` and `git` are resolved from PATH deliberately, so the operator
+#       controls which binaries are used rather than the code hardcoding paths.
+ignore = ["S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: assertions are the point of a test.
+# S105/S108: credential *names* and container paths in fixtures are not secrets.
+"tests/*" = ["S101", "S105", "S108"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
