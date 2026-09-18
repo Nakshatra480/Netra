@@ -152,7 +152,7 @@ class DockerSandbox:
             "--cpus", self._limits.cpus,
             "--pids-limit", str(self._limits.pids),
             # Writable scratch only; nothing persists beyond the container.
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108 - a tmpfs inside the container, not a host path
             # The repository is mounted read-only: no analysis step may alter it.
             "--volume", f"{workspace}:/workspace:ro",
             "--workdir", "/workspace",

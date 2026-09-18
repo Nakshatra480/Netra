@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 #: Absolute path the repository is mounted at inside the container.
 WORKSPACE = "/workspace"
@@ -25,7 +25,7 @@ class CommandDenied(ValueError):
     """Raised when a requested command violates the allowlist."""
 
 
-class Binary(str, Enum):
+class Binary(StrEnum):
     """The only executables the sandbox may ever run."""
 
     GIT = "git"
@@ -204,6 +204,19 @@ def read_file(path: str, max_lines: int = 400) -> SandboxCommand:
     # `cat` cannot bound its own output, so the executor truncates instead; the
     # bound is enforced by the caller reading at most max_lines.
     return _command("read_file", Binary.CAT, "--", f"{WORKSPACE}/{validate_path(path)}")
+
+
+def git_show(sha: str, path: str) -> SandboxCommand:
+    """Read a file's contents as of a specific commit."""
+    return _command(
+        "read_file_at_commit",
+        Binary.GIT,
+        "--no-optional-locks",
+        "-C",
+        WORKSPACE,
+        "show",
+        f"{validate_sha(sha)}:{validate_path(path)}",
+    )
 
 
 def list_files(path: str = ".") -> SandboxCommand:

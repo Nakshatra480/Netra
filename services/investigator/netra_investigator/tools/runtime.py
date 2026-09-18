@@ -22,6 +22,7 @@ from ..sandbox.allowlist import (
     git_changed_files,
     git_diff,
     git_log,
+    git_show,
     list_files,
     read_file,
     search_literal,
@@ -140,6 +141,13 @@ class InvestigationTools:
         if not result.ok:
             return []
         return result.stdout.splitlines()[:max_lines]
+
+    def read_file_at_commit(self, sha: str, path: str) -> list[str] | None:
+        """Read a file as it existed at a commit, or None if it did not exist."""
+        result = self._execute(git_show(sha, path))
+        if not result.ok:
+            return None
+        return result.stdout.splitlines()
 
     def list_files(self, path: str = ".") -> list[str]:
         """List the repository's tracked files under a path."""

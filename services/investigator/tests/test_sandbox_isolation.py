@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from support import requires_docker
 
 from netra_investigator.sandbox import DockerSandbox, SandboxLimits
 from netra_investigator.sandbox.allowlist import (
@@ -16,8 +17,6 @@ from netra_investigator.sandbox.allowlist import (
     git_diff,
     search_literal,
 )
-
-from support import requires_docker
 
 pytestmark = requires_docker
 
