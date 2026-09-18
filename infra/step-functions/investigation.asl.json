@@ -76,7 +76,7 @@
         "PropagateTags": "TASK_DEFINITION",
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
-            "Subnets": ${SubnetIds},
+            "Subnets": ["${SubnetOne}", "${SubnetTwo}", "${SubnetThree}"],
             "SecurityGroups": ["${SecurityGroupId}"],
             "AssignPublicIp": "ENABLED"
           }

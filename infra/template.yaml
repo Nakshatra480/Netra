@@ -425,11 +425,12 @@ Resources:
         ClusterArn: !GetAtt InvestigationCluster.Arn
         TaskDefinitionArn: !Ref InvestigatorTaskDefinition
         SecurityGroupId: !GetAtt InvestigatorSecurityGroup.GroupId
-        SubnetIds: !Sub
-          - '["${One}","${Two}","${Three}"]'
-          - One: !Select [0, !Ref VpcSubnetIds]
-            Two: !Select [1, !Ref VpcSubnetIds]
-            Three: !Select [2, !Ref VpcSubnetIds]
+        # Three separate substitutions rather than one JSON array, so the
+        # definition file stays valid JSON with the placeholders still in it --
+        # CloudFormation parses it before substituting.
+        SubnetOne: !Select [0, !Ref VpcSubnetIds]
+        SubnetTwo: !Select [1, !Ref VpcSubnetIds]
+        SubnetThree: !Select [2, !Ref VpcSubnetIds]
       Logging:
         Level: ALL
         IncludeExecutionData: false   # Execution data can carry change detail.
