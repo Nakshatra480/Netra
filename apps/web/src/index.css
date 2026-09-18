@@ -1,0 +1,129 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css';
+@import '@xterm/xterm/css/xterm.css';
+
+/*
+ * Netra's visual language.
+ *
+ * Calm, technical and dense. Colour carries meaning rather than decoration:
+ * a hue is only used when it tells the reviewer something about state or
+ * severity, so a screen that is mostly neutral is a screen that is mostly fine.
+ */
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* Surfaces: a near-black base with layered panels, so depth reads without
+     borders everywhere. */
+  --color-canvas: oklch(0.17 0.008 260);
+  --color-surface: oklch(0.21 0.009 260);
+  --color-surface-raised: oklch(0.25 0.01 260);
+  --color-surface-sunken: oklch(0.14 0.008 260);
+  --color-line: oklch(0.32 0.012 260);
+  --color-line-strong: oklch(0.42 0.015 260);
+
+  --color-ink: oklch(0.96 0.003 260);
+  --color-ink-muted: oklch(0.74 0.012 260);
+  --color-ink-subtle: oklch(0.58 0.014 260);
+
+  /* Semantic state. Blue is activity, amber is attention, red is proven
+     severity, green is settled. */
+  --color-state-idle: oklch(0.64 0.014 260);
+  --color-state-active: oklch(0.68 0.15 245);
+  --color-state-review: oklch(0.76 0.14 75);
+  --color-state-severe: oklch(0.65 0.19 22);
+  --color-state-resolved: oklch(0.72 0.15 155);
+
+  --radius-panel: 0.75rem;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv02', 'cv03', 'cv11';
+  }
+
+  /* A single, unmistakable focus treatment. Keyboard users should never have to
+     hunt for where they are. */
+  :focus-visible {
+    outline: 2px solid var(--color-state-active);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--color-state-active) 35%, transparent);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-line-strong);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+  }
+
+  /* Technical values -- paths, hashes, identifiers -- are always monospace, so
+     the eye can tell data from prose at a glance. */
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+}
+
+/* Honour the user's motion preference everywhere, including graph and terminal
+   transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* React Flow inherits Netra's surfaces rather than shipping its own theme. */
+.react-flow {
+  --xy-background-color: var(--color-surface-sunken);
+  --xy-edge-stroke: var(--color-line-strong);
+  --xy-edge-stroke-selected: var(--color-state-active);
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
