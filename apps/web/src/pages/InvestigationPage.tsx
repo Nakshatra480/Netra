@@ -7,6 +7,7 @@ import { ActivityRail } from '@/features/investigation/Activity';
 import { ApprovalPanel } from '@/features/investigation/Approval';
 import { BlastRadius } from '@/features/investigation/BlastRadius';
 import { EvidencePanel } from '@/features/investigation/Evidence';
+import { ProvenanceBar } from '@/features/investigation/ProvenanceBar';
 import { InvestigationTerminal } from '@/features/investigation/Terminal';
 import { useInvestigation } from '@/hooks/useInvestigation';
 import { api, type Session } from '@/lib/api';
@@ -60,9 +61,7 @@ export function InvestigationPage({ session }: { session: Session }) {
 
   const investigation = state.detail?.investigation;
   const finding = state.findings[0];
-  const modelUsed = state.activities.every(
-    (a) => !a.message.includes('Model investigation unavailable'),
-  );
+  const provenance = investigation?.modelProvenance ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -89,7 +88,8 @@ export function InvestigationPage({ session }: { session: Session }) {
       </header>
 
       {/* The one-sentence answer, before any detail. */}
-      <Panel className="px-5 py-4">
+      <Panel className="overflow-hidden">
+        <div className="px-5 py-4">
         <p className="text-[0.68rem] uppercase tracking-[0.08em] text-[--color-ink-subtle]">
           {investigation?.change.title}
         </p>
@@ -122,6 +122,8 @@ export function InvestigationPage({ session }: { session: Session }) {
             </div>
           </div>
         ) : null}
+        </div>
+        <ProvenanceBar provenance={provenance} />
       </Panel>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -141,7 +143,7 @@ export function InvestigationPage({ session }: { session: Session }) {
             verifications={state.verifications}
             selectedFile={selectedFile}
             onSelect={setSelectedFile}
-            modelUsed={modelUsed}
+            modelUsed={provenance?.modelUsed ?? false}
           />
         </div>
       </div>

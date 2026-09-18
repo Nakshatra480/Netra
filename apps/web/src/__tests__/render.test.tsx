@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import type { Evidence, VerificationResult } from '@netra/domain';
 import { ActivityRail } from '@/features/investigation/Activity';
 import { EvidencePanel } from '@/features/investigation/Evidence';
+import { ProvenanceBar } from '@/features/investigation/ProvenanceBar';
 import { SeverityBadge, StatusBadge, VerificationBadge } from '@/components/status';
 
 const evidence: Evidence[] = [
@@ -103,5 +104,79 @@ describe('investigation UI', () => {
     );
     expect(screen.getByText('Awaiting your approval')).toBeTruthy();
     expect(screen.getByText('CRITICAL')).toBeTruthy();
+  });
+});
+
+describe('AI provenance', () => {
+  const base = {
+    provider: 'OpenRouter',
+    model: 'anthropic/claude-sonnet-4.5',
+    modelLabel: 'Claude Sonnet 4.5',
+    modelUsed: true,
+    display: 'OpenRouter · Claude Sonnet 4.5',
+    fallbackReason: null,
+    unavailableReason: null,
+    calls: 1,
+    toolCalls: 0,
+    inputTokens: 693,
+    outputTokens: 191,
+    totalTokens: 884,
+    costUsd: 0.004944,
+    estimatedTokens: 203,
+  };
+
+  it('names the provider and model that actually ran', () => {
+    render(<ProvenanceBar provenance={base} />);
+    expect(screen.getByText('OpenRouter · Claude Sonnet 4.5')).toBeTruthy();
+    expect(screen.getByText('203 tokens')).toBeTruthy();
+    expect(screen.getByText('$0.0049')).toBeTruthy();
+  });
+
+  it('says plainly when no model ran, and shows no usage', () => {
+    render(
+      <ProvenanceBar
+        provenance={{
+          ...base,
+          provider: null,
+          model: null,
+          modelLabel: null,
+          modelUsed: false,
+          display: 'AI unavailable — deterministic analysis',
+          unavailableReason: 'no OpenRouter credentials are configured',
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          costUsd: 0,
+          estimatedTokens: null,
+        }}
+      />,
+    );
+    expect(screen.getByText('AI unavailable — deterministic analysis')).toBeTruthy();
+    // Claiming turns or cost for a run that never happened would be a lie.
+    expect(screen.queryByText('Model turns')).toBeNull();
+    expect(screen.queryByText(/\$/)).toBeNull();
+  });
+
+  it('states that verification is deterministic either way', () => {
+    render(<ProvenanceBar provenance={{ ...base, modelUsed: false }} />);
+    expect(screen.getByText('deterministic')).toBeTruthy();
+  });
+
+  it('surfaces a fallback to the local provider', () => {
+    render(
+      <ProvenanceBar
+        provenance={{
+          ...base,
+          provider: 'Ollama',
+          modelLabel: 'qwen2.5-coder:7b',
+          display: 'Ollama · qwen2.5-coder:7b',
+          fallbackReason: 'all OpenRouter credentials are rate limited or exhausted',
+          costUsd: 0,
+        }}
+      />,
+    );
+    expect(screen.getByText('Ollama · qwen2.5-coder:7b')).toBeTruthy();
+    expect(screen.getByText(/Fell back:/)).toBeTruthy();
   });
 });

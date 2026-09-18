@@ -8,9 +8,10 @@ import {
   type Investigation,
   type InvestigationDetail,
   type InvestigationEvent,
+  type ModelProvenance,
   type Severity,
 } from '@netra/domain';
-import type { Config } from '../config.js';
+import { investigatorEnv, type Config } from '../config.js';
 import type { Identity } from '../auth/identity.js';
 import { EventBroker } from '../runner/broker.js';
 import { InvestigatorRunner } from '../runner/investigator.js';
@@ -72,6 +73,7 @@ export class InvestigationService {
         author: 'priya@orbital.example',
       },
       changedFiles: [],
+      modelProvenance: null,
       status: 'RECEIVED',
       severity: null,
       summary: null,
@@ -107,7 +109,7 @@ export class InvestigationService {
             '--repository', investigation.change.repositoryFullName,
             '--title', investigation.change.title,
           ],
-          env: { AWS_REGION: this.config.awsRegion },
+          env: investigatorEnv(this.config),
         },
         (event) => this.#handleEvent(investigation.id, event),
       );
@@ -171,6 +173,7 @@ export class InvestigationService {
       summary: (result.summary as string | null) ?? null,
       failureReason: (result.failureReason as string | null) ?? null,
       changedFiles: (result.changedFiles as ChangedFile[]) ?? [],
+      modelProvenance: toProvenance(result.model_metadata),
     });
   }
 
@@ -317,7 +320,7 @@ export class InvestigationService {
             '--approver', identity.userId,
             '--diff-file', diffFile,
           ],
-          env: { AWS_REGION: this.config.awsRegion },
+          env: investigatorEnv(this.config),
         },
         (event) => this.#handleEvent(investigation.id, event),
       );
@@ -402,6 +405,36 @@ export class ApprovalError extends Error {
     super(message);
     this.name = 'ApprovalError';
   }
+}
+
+/**
+ * Normalise the engine's model metadata for storage.
+ *
+ * Defensive by design: the UI must never claim an AI run happened because a
+ * field was missing, so an unreadable payload becomes "no model ran".
+ */
+function toProvenance(raw: unknown): ModelProvenance | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  const num = (key: string) => (typeof m[key] === 'number' ? (m[key] as number) : 0);
+  const str = (key: string) => (typeof m[key] === 'string' ? (m[key] as string) : null);
+
+  return {
+    provider: str('provider'),
+    model: str('model'),
+    modelLabel: str('modelLabel'),
+    modelUsed: m.modelUsed === true,
+    display: str('display') ?? 'AI unavailable — deterministic analysis',
+    fallbackReason: str('fallbackReason'),
+    unavailableReason: str('unavailableReason'),
+    calls: num('calls'),
+    toolCalls: num('toolCalls'),
+    inputTokens: num('inputTokens'),
+    outputTokens: num('outputTokens'),
+    totalTokens: num('totalTokens'),
+    costUsd: num('costUsd'),
+    estimatedTokens: typeof m.estimatedTokens === 'number' ? m.estimatedTokens : null,
+  };
 }
 
 function lastLine(text: string): string {

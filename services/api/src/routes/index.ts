@@ -8,7 +8,7 @@ import {
   type InvestigationDetail,
 } from '@netra/domain';
 import { AuthError, type CompositeVerifier, type Identity } from '../auth/identity.js';
-import type { Config } from '../config.js';
+import { hasModelProvider, type Config } from '../config.js';
 import { ApiError, sendError } from '../http/errors.js';
 import type { EventBroker } from '../runner/broker.js';
 import { ApprovalError, type InvestigationService } from '../service/investigationService.js';
@@ -60,6 +60,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get('/api/health', async () => ({
     status: 'ok',
     cognitoConfigured: verifier.cognitoConfigured,
+    modelProviderConfigured: hasModelProvider(config),
     demoModeEnabled: config.demoModeEnabled,
   }));
 

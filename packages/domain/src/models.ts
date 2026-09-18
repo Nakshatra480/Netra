@@ -189,6 +189,35 @@ export const remediationSchema = z.object({
 });
 export type Remediation = z.infer<typeof remediationSchema>;
 
+/**
+ * How a model contributed to an investigation, if one did.
+ *
+ * Recorded so the UI can state the path that actually ran. It never contains a
+ * credential: only the provider name, the model, and usage counters.
+ */
+export const modelProvenanceSchema = z.object({
+  /** e.g. "OpenRouter" or "Ollama". Null when no model ran. */
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  modelLabel: z.string().nullable(),
+  modelUsed: z.boolean(),
+  /** One line for the UI, e.g. "OpenRouter · Claude Sonnet 4.5". */
+  display: z.string(),
+  /** Why a non-preferred provider was used, when one was. */
+  fallbackReason: z.string().nullable(),
+  /** Why no model ran at all. */
+  unavailableReason: z.string().nullable(),
+  calls: z.number().int().nonnegative(),
+  toolCalls: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  /** Estimated tokens of context actually assembled for the model. */
+  estimatedTokens: z.number().int().nonnegative().nullable(),
+});
+export type ModelProvenance = z.infer<typeof modelProvenanceSchema>;
+
 export const investigationSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -205,6 +234,8 @@ export const investigationSchema = z.object({
   failureReason: z.string().nullable(),
   /** True when the investigation ran against the built-in demo fixture. */
   isDemo: z.boolean(),
+  /** Null until the investigation has decided how it was interpreted. */
+  modelProvenance: modelProvenanceSchema.nullable(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
 });

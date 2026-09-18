@@ -45,6 +45,22 @@ const configSchema = z.object({
   cognitoUserPoolId: z.string().optional(),
   cognitoClientId: z.string().optional(),
 
+  /**
+   * Model provider configuration, forwarded to the investigation engine.
+   *
+   * Declared explicitly rather than inherited from the ambient environment, so
+   * a deployment can see what the engine will receive, and so production can
+   * source these from Secrets Manager and hand them over deliberately. The
+   * keys are secret and never leave this process except into the engine.
+   */
+  openrouterApiKeys: z.string().optional(),
+  openrouterBaseUrl: z.string().optional(),
+  ollamaEnabled: z.string().optional(),
+  ollamaBaseUrl: z.string().optional(),
+  ollamaModel: z.string().optional(),
+  maxModelTurns: z.string().optional(),
+  maxInvestigationCostUsd: z.string().optional(),
+
   /** Signing key for demo sessions. Generated per process when unset. */
   demoSessionSecret: z.string().optional(),
   demoModeEnabled: z
@@ -78,6 +94,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     stateMachineArn: env.NETRA_STATE_MACHINE_ARN,
     cognitoUserPoolId: env.NETRA_COGNITO_USER_POOL_ID,
     cognitoClientId: env.NETRA_COGNITO_CLIENT_ID,
+    openrouterApiKeys: env.OPENROUTER_API_KEYS,
+    openrouterBaseUrl: env.OPENROUTER_BASE_URL,
+    ollamaEnabled: env.OLLAMA_ENABLED,
+    ollamaBaseUrl: env.OLLAMA_BASE_URL,
+    ollamaModel: env.OLLAMA_MODEL,
+    maxModelTurns: env.MAX_MODEL_TURNS,
+    maxInvestigationCostUsd: env.MAX_INVESTIGATION_COST_USD,
     demoSessionSecret: env.NETRA_DEMO_SESSION_SECRET,
     demoModeEnabled: env.VITE_DEMO_MODE_ENABLED,
     investigatorPython: env.NETRA_INVESTIGATOR_PYTHON,
@@ -92,6 +115,35 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration: ${problems}`);
   }
   return parsed.data;
+}
+
+/**
+ * The environment the investigation engine is given.
+ *
+ * Only these variables cross into the engine process: an explicit list rather
+ * than the parent's whole environment, so nothing unrelated -- and no unrelated
+ * secret -- is handed to a subprocess that does not need it.
+ */
+export function investigatorEnv(config: Config): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { AWS_REGION: config.awsRegion };
+  const pass = (key: string, value: string | undefined) => {
+    if (value) env[key] = value;
+  };
+
+  pass('OPENROUTER_API_KEYS', config.openrouterApiKeys);
+  pass('OPENROUTER_BASE_URL', config.openrouterBaseUrl);
+  pass('OLLAMA_ENABLED', config.ollamaEnabled);
+  pass('OLLAMA_BASE_URL', config.ollamaBaseUrl);
+  pass('OLLAMA_MODEL', config.ollamaModel);
+  pass('MAX_MODEL_TURNS', config.maxModelTurns);
+  pass('MAX_INVESTIGATION_COST_USD', config.maxInvestigationCostUsd);
+  pass('NETRA_SANDBOX_IMAGE', process.env.NETRA_SANDBOX_IMAGE);
+  return env;
+}
+
+/** True when a model provider is configured for the engine. */
+export function hasModelProvider(config: Config): boolean {
+  return Boolean(config.openrouterApiKeys || config.ollamaEnabled !== 'false');
 }
 
 /** True when the deployment has everything Cognito token verification needs. */
