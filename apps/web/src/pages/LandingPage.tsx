@@ -133,8 +133,9 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
         <p className="mt-16 max-w-3xl text-xs leading-relaxed text-[--color-ink-subtle]">
           Netra runs on AWS: Cognito authenticates, API Gateway and Lambda receive the change,
           EventBridge and Step Functions orchestrate the investigation, Fargate runs the isolated
-          analysis, and DynamoDB and S3 hold the evidence. Claude reaches the investigation through
-          AgentRouter, an external model gateway.
+          analysis, and DynamoDB and S3 hold the evidence. Model inference is provider-agnostic:
+          OpenRouter is the preferred remote path, with a local Ollama fallback, and deterministic
+          analysis works with no model at all.
         </p>
       </main>
     </div>

@@ -39,3 +39,6 @@ skill.md
 .env
 .env.*
 !.env.example
+
+# Local AI credentials
+openrouter_api.md

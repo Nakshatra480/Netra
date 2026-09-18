@@ -1,24 +1,21 @@
 """The investigation agent.
 
-The model investigates by *choosing tools*, not by writing commands. Because
-Netra's model gateway forwards plain completions with no provider-native tool
-API, tool use runs over an explicit JSON protocol:
+Netra runs deterministic analysis first and asks a model only for what code
+cannot decide: what this change *means* for a reviewer. That ordering is both
+the trust model and the token strategy -- the expensive component runs last, on
+the smallest sufficient context, and its output is validated before use.
 
-    model -> {"tool": "...", "args": {...}} -> validation -> allowlist
-          -> sandbox -> structured result -> model
+    deterministic analysis
+        -> prefilter: is a model worth invoking at all?
+        -> minimal diff-first context, deduplicated and budgeted
+        -> one structured call (more only if new evidence is needed)
+        -> schema validation
+        -> deterministic verification remains authoritative
 
-The security property is unchanged, and is in fact easier to state: the model
-emits a tool *name* and typed arguments. It never emits a command, a path that
-skips validation, or anything that reaches a shell. An unknown tool name, a
-malformed argument or a rejected path is answered with an error the model can
-read, and the loop continues.
-
-Three rules are enforced here rather than requested in the prompt:
-
-* the agent cannot execute a command -- only call a declared tool;
-* the agent's claims are never marked verified;
-* the agent's private reasoning is never emitted or stored. Only the final
-  structured summary leaves this module.
+Tool use runs over an explicit JSON protocol rather than a provider-native tool
+API, so the security boundary is identical on every provider: the model emits a
+tool *name* and typed arguments, deterministic code validates them, and only
+then does the allowlist build a command. The model never emits a command.
 """
 
 from __future__ import annotations
@@ -30,50 +27,69 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import InvestigatorConfig
-from .providers import Message, ModelProvider, ModelUnavailable, ProviderUsage
+from .context import ContextBudget, ContextBuilder, PrefilterDecision
+from .providers import Message, ModelRequest, ModelRouter, Tier
 from .sandbox import CommandDenied
 from .tools import InvestigationTools
 
 logger = logging.getLogger(__name__)
 
+#: Severities the model may propose. Anything else is rejected rather than
+#: coerced, because a silently-corrected severity is a lie about confidence.
+ALLOWED_SEVERITIES = frozenset({"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
+
+TOOL_NAMES = frozenset(
+    {
+        "list_changed_files",
+        "inspect_diff",
+        "search_repository",
+        "find_references",
+        "read_file",
+        "list_files",
+        "inspect_git_history",
+    }
+)
+
 SYSTEM_PROMPT = """\
-You are Netra's change investigator. You examine one code change in a repository \
-and explain what it could cause.
+You are Netra's change investigator. You explain what a code change could cause.
 
-You work by calling read-only analysis tools. You must not claim anything you \
-have not observed through a tool.
+Deterministic analysis has already run and its findings are given to you below. \
+Your job is to explain the consequence to a reviewer, not to re-derive it.
 
-Your focus is credential exposure: a change that causes a secret, key, token or \
-password to reach a context that publishes it, such as a browser bundle.
+You may request more evidence by calling a read-only tool, but only when the \
+context you were given is genuinely insufficient. Prefer answering directly.
 
 TOOLS
-- list_changed_files{}                     files this change added, modified or deleted
-- inspect_diff{path?}                      the unified diff, optionally for one path
-- search_repository{query, path?}          literal string search
-- find_references{symbol, path?}           whole-word references to an identifier
-- read_file{path}                          read a repository file
-- list_files{path?}                        list tracked files
-- inspect_git_history{path?, limit?}       recent commits
+- list_changed_files{}                files this change added, modified or deleted
+- inspect_diff{path?}                 the unified diff, optionally for one path
+- search_repository{query, path?}     literal string search
+- find_references{symbol, path?}      whole-word references to an identifier
+- read_file{path}                     read a repository file
+- list_files{path?}                   list tracked files
+- inspect_git_history{path?, limit?}  recent commits
 
 PROTOCOL
-Reply with exactly one JSON object and nothing else. Either call a tool:
+Reply with exactly one JSON object and nothing else. Either request evidence:
 
-{"tool": "search_repository", "args": {"query": "AWS_SECRET_ACCESS_KEY"}}
+{"tool": "read_file", "args": {"path": "src/client/config.js"}}
 
-or, when you have finished investigating, report:
+or report:
 
 {"done": true,
  "summary": "one sentence naming the consequence of this change",
  "reasoning_for_reviewer": "two or three sentences of plain explanation",
+ "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
  "suspected_secrets": ["ENV_VAR_NAME"],
- "suspected_exposed_files": ["path/to/file"]}
+ "suspected_exposed_files": ["path/to/file"],
+ "confidence": 0.0}
 
 RULES
 - Never say "verified" or "confirmed". A separate deterministic checker decides \
 that, not you.
 - Never invent a file path, line number or identifier.
+- Do not restate the repository contents back to me.
 - Do not explain your reasoning outside the JSON object.
-- Be efficient: a handful of well-chosen tool calls, then report.
+- Be brief. A reviewer reads your summary in ten seconds.
 """
 
 
@@ -83,37 +99,41 @@ class AgentHypothesis:
 
     summary: str = ""
     explanation: str = ""
+    severity: str | None = None
+    confidence: float | None = None
     suspected_secrets: list[str] = field(default_factory=list)
     suspected_files: list[str] = field(default_factory=list)
 
-    #: Provenance, shown in the UI so a reader knows what produced the prose.
-    provider: str | None = None
-    model: str | None = None
-    model_label: str | None = None
+    #: Provenance and accounting, shown in the UI and persisted.
+    metadata: dict[str, Any] = field(default_factory=dict)
     tool_calls: int = 0
-    usage: ProviderUsage | None = None
 
-    #: True when the model was unavailable and the pipeline proceeded without it.
     model_unavailable: bool = False
     unavailable_reason: str | None = None
 
     @classmethod
-    def unavailable(cls, reason: str) -> AgentHypothesis:
-        return cls(model_unavailable=True, unavailable_reason=reason)
+    def unavailable(cls, reason: str, metadata: dict[str, Any] | None = None) -> AgentHypothesis:
+        return cls(
+            model_unavailable=True,
+            unavailable_reason=reason,
+            metadata=metadata or {},
+        )
+
+    @property
+    def model_label(self) -> str | None:
+        return self.metadata.get("modelLabel")
+
+    @property
+    def provider(self) -> str | None:
+        return self.metadata.get("provider")
 
     def to_metadata(self) -> dict[str, Any]:
         """Provenance for persistence and display. Never includes credentials."""
         return {
-            "provider": self.provider,
-            "model": self.model,
-            "modelLabel": self.model_label,
+            **self.metadata,
             "toolCalls": self.tool_calls,
             "modelUsed": not self.model_unavailable,
             "unavailableReason": self.unavailable_reason,
-            "inputTokens": self.usage.input_tokens if self.usage else None,
-            "outputTokens": self.usage.output_tokens if self.usage else None,
-            "costUnits": self.usage.cost_units if self.usage else None,
-            "costUnitName": self.usage.cost_unit_name if self.usage else None,
         }
 
 
@@ -121,130 +141,134 @@ def investigate(
     tools: InvestigationTools,
     config: InvestigatorConfig,
     change_description: str,
-    provider: ModelProvider | None = None,
+    router: ModelRouter | None = None,
+    *,
+    findings_context: str = "",
+    decision: PrefilterDecision | None = None,
 ) -> AgentHypothesis:
-    """Run the agent loop and return its structured hypothesis.
+    """Interpret a change, if a model is available and worth invoking.
 
-    If the model is unavailable the investigation continues without it: the
-    deterministic analyzer is what produces findings, so the loss is the
-    narrative rather than the result. The caller is told, so the UI can say so
-    rather than presenting a model-free run as a model-backed one.
+    Returns an unavailable hypothesis rather than raising: an absent model is an
+    expected state for Netra, and the deterministic analyzer -- not this -- is
+    what produces the finding.
     """
-    if provider is None:
-        if not config.model_configured:
-            return AgentHypothesis.unavailable(
-                "No model gateway is configured, so this investigation ran "
-                "deterministic checks only."
-            )
-        try:
-            from .providers import build_provider
+    if router is None:
+        from .providers import build_router
 
-            provider = build_provider(config)
-        except ModelUnavailable as err:
-            return AgentHypothesis.unavailable(str(err))
+        router = build_router(config)
 
-    runner = _ToolRunner(tools, config.max_tool_result_chars)
-    usage = ProviderUsage()
+    # Cheapest possible exit: if deterministic analysis found nothing to
+    # interpret, no context is built and no provider is contacted.
+    if decision is not None and not decision.needs_model:
+        return AgentHypothesis.unavailable(
+            decision.reason, {"display": "Not required — deterministic analysis was conclusive"}
+        )
+
+    blocked = router.preflight()
+    if blocked is not None:
+        return AgentHypothesis.unavailable(blocked, router.metadata())
+
+    tier = Tier(decision.suggested_tier) if decision else Tier.STANDARD
+    builder = ContextBuilder(
+        budget=ContextBudget(
+            max_input_tokens=config.max_input_tokens,
+            max_fragment_tokens=config.max_fragment_tokens,
+        )
+    )
+    builder.add("change", "under investigation", change_description)
+    if findings_context:
+        builder.add("deterministic findings", "already established", findings_context)
+
+    runner = _ToolRunner(tools, config.max_fragment_tokens)
     conversation: list[Message] = [
         Message(
             role="user",
             content=(
-                f"{change_description}\n\n"
-                "Investigate this change. Reply with one JSON object: either a "
-                "tool call or your final report."
+                f"{builder.render()}\n\n"
+                "Explain the consequence of this change. Reply with one JSON "
+                "object: your report, or a tool call if you genuinely need more."
             ),
         )
     ]
 
-    for turn in range(config.max_agent_iterations):
-        try:
-            completion = provider.complete(
+    for _turn in range(config.max_model_turns):
+        completion = router.generate(
+            ModelRequest(
                 system=SYSTEM_PROMPT,
-                messages=conversation,
+                messages=tuple(conversation),
                 max_tokens=config.max_output_tokens,
-                temperature=0.0,
+                tier=tier,
             )
-        except ModelUnavailable as err:
-            logger.warning("model unavailable on turn %d: %s", turn, err)
-            return AgentHypothesis.unavailable(str(err))
-
-        usage.record(completion)
-
-        if usage.cost_units >= config.max_cost_units:
-            # The budget is a ceiling, not a target. Stop spending and let the
-            # deterministic analysis carry the investigation.
-            logger.info("agent reached its cost budget after %d call(s)", usage.calls)
-            return AgentHypothesis(
-                provider=provider.name,
-                model=provider.model,
-                model_label=provider.model_label,
-                tool_calls=runner.calls,
-                usage=usage,
-                model_unavailable=True,
-                unavailable_reason=(
-                    "The investigation reached its model spending budget before the "
-                    "model concluded."
-                ),
+        )
+        if completion is None:
+            return AgentHypothesis.unavailable(
+                router.outcome.unavailable_reason or "no model was available",
+                _metadata(router, builder, runner),
             )
 
         action = _parse_action(completion.text)
 
         if action is None:
             conversation += [
-                Message(role="assistant", content=completion.text[:2000]),
+                Message(role="assistant", content=completion.text[:1000]),
                 Message(
                     role="user",
                     content=(
                         "That was not a single JSON object. Reply with exactly one "
-                        "JSON object: a tool call or your final report."
+                        "JSON object: your report, or a tool call."
                     ),
                 ),
             ]
             continue
 
         if action.get("done"):
-            return _finalize(action, provider, runner.calls, usage)
+            return _finalize(action, router, builder, runner)
 
         tool_name = str(action.get("tool", ""))
         args = action.get("args") if isinstance(action.get("args"), dict) else {}
         result = runner.run(tool_name, args)
 
+        # Deduplicate through the same builder: evidence already in context is
+        # not sent twice, however often the model asks for it.
+        fresh = builder.add("tool result", tool_name, result)
         conversation += [
             Message(role="assistant", content=json.dumps(action)),
-            Message(role="user", content=f"Tool result for {tool_name}:\n{result}"),
+            Message(
+                role="user",
+                content=(
+                    f"Tool result for {tool_name}:\n{result}"
+                    if fresh
+                    else f"You already have the result of {tool_name} above. Report now."
+                ),
+            ),
         ]
 
-    # The loop is bounded; an agent that will not conclude does not get to keep
-    # spending. Whatever it established is still backed by the analyzer.
-    logger.info("agent reached its iteration limit without concluding")
-    return AgentHypothesis(
-        provider=provider.name,
-        model=provider.model,
-        model_label=provider.model_label,
-        tool_calls=runner.calls,
-        usage=usage,
-        model_unavailable=True,
-        unavailable_reason=(
-            "The model did not reach a conclusion within its investigation budget."
-        ),
+    logger.info("agent reached its turn budget without concluding")
+    return AgentHypothesis.unavailable(
+        "the model did not reach a conclusion within its turn budget",
+        _metadata(router, builder, runner),
     )
 
 
 class _ToolRunner:
     """Dispatches a validated tool call to the sandbox-backed tools."""
 
-    def __init__(self, tools: InvestigationTools, max_result_chars: int) -> None:
+    def __init__(self, tools: InvestigationTools, max_result_tokens: int) -> None:
         self._tools = tools
-        self._max_result_chars = max_result_chars
+        self._max_chars = int(max_result_tokens * 3.7)
         self.calls = 0
 
     def run(self, name: str, args: dict[str, Any]) -> str:
         self.calls += 1
+        if name not in TOOL_NAMES:
+            # Nothing is executed, and the model is told why so it can choose a
+            # real tool on its next turn.
+            return json.dumps({"error": f"unknown tool: {name!r}"})
         try:
-            return self._dispatch(name, args)[: self._max_result_chars]
+            from .context import summarize_output
+
+            return summarize_output(self._dispatch(name, args), self._max_chars)
         except CommandDenied as err:
-            # The allowlist refused it. The model is told why and can try
-            # something else; nothing was executed.
             return json.dumps({"error": f"rejected by the tool allowlist: {err}"})
         except Exception as err:  # noqa: BLE001 - a tool failure must not end the run
             logger.warning("tool %s failed: %s", name, err)
@@ -274,10 +298,10 @@ class _ToolRunner:
             case "list_files":
                 return json.dumps(self._tools.list_files(path or ".")[:300])
             case "inspect_git_history":
-                limit = args.get("limit", 10)
-                limit = int(limit) if str(limit).isdigit() else 10
+                raw = args.get("limit", 10)
+                limit = int(raw) if str(raw).isdigit() else 10
                 return json.dumps(self._tools.inspect_git_history(path, limit))
-            case _:
+            case _:  # pragma: no cover - guarded by TOOL_NAMES above
                 return json.dumps({"error": f"unknown tool: {name!r}"})
 
 
@@ -302,8 +326,8 @@ _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 def _parse_action(raw: str) -> dict[str, Any] | None:
     """Extract the single JSON object the protocol requires.
 
-    Only the declared fields are ever read. Anything else the model produced --
-    including reasoning it volunteered around the JSON -- is discarded here and
+    Only declared fields are read downstream. Anything else the model produced,
+    including reasoning it volunteered around the JSON, is discarded here and
     never reaches storage, an event or the UI.
     """
     match = _JSON_BLOCK.search(raw)
@@ -318,29 +342,43 @@ def _parse_action(raw: str) -> dict[str, Any] | None:
 
 def _finalize(
     action: dict[str, Any],
-    provider: ModelProvider,
-    tool_calls: int,
-    usage: ProviderUsage,
+    router: ModelRouter,
+    builder: ContextBuilder,
+    runner: _ToolRunner,
 ) -> AgentHypothesis:
+    """Validate the model's report before any of it is used."""
+    severity = str(action.get("severity", "")).upper()
+    confidence = action.get("confidence")
+
     return AgentHypothesis(
         summary=str(action.get("summary", ""))[:400],
         explanation=str(action.get("reasoning_for_reviewer", ""))[:1200],
-        suspected_secrets=[
-            str(s)[:100] for s in _as_list(action.get("suspected_secrets"))
-        ][:20],
-        suspected_files=[
-            str(s)[:400] for s in _as_list(action.get("suspected_exposed_files"))
-        ][:50],
-        provider=provider.name,
-        model=provider.model,
-        model_label=provider.model_label,
-        tool_calls=tool_calls,
-        usage=usage,
+        # An out-of-range severity is dropped, not clamped: the deterministic
+        # analyzer sets severity anyway, and a coerced value would look like
+        # agreement that never happened.
+        severity=severity if severity in ALLOWED_SEVERITIES else None,
+        confidence=(
+            float(confidence)
+            if isinstance(confidence, int | float) and 0.0 <= float(confidence) <= 1.0
+            else None
+        ),
+        suspected_secrets=[str(s)[:100] for s in _as_list(action.get("suspected_secrets"))][:20],
+        suspected_files=[str(s)[:400] for s in _as_list(action.get("suspected_exposed_files"))][
+            :50
+        ],
+        metadata=_metadata(router, builder, runner),
+        tool_calls=runner.calls,
     )
+
+
+def _metadata(
+    router: ModelRouter, builder: ContextBuilder, runner: _ToolRunner
+) -> dict[str, Any]:
+    return {**router.metadata(), **builder.stats(), "toolCalls": runner.calls}
 
 
 def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-__all__ = ["SYSTEM_PROMPT", "AgentHypothesis", "investigate"]
+__all__ = ["ALLOWED_SEVERITIES", "SYSTEM_PROMPT", "AgentHypothesis", "investigate"]
