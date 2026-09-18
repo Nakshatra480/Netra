@@ -3,9 +3,13 @@ templates:
   - template.yaml
 
 ignore_checks:
-  # E3031 pattern-checks property values without evaluating Conditions, so the
-  # conditionally-absent ExecutionRoleArn (Fn::If -> AWS::NoValue) is read as an
-  # empty string and reported as a malformed role ARN. The parameter has its own
-  # AllowedPattern, which does permit empty, and CloudFormation resolves the
-  # condition correctly at deploy time.
+  # E3031 and W1030 pattern-check property values without evaluating
+  # Conditions. Several resources here are conditional on roles and an image
+  # URI that are created out of band, so their parameters default to an empty
+  # string and are only referenced when the condition is true. The linter reads
+  # those defaults as malformed ARNs and VPC ids.
+  #
+  # Each parameter carries its own AllowedPattern where one applies, and
+  # CloudFormation resolves the conditions correctly at deploy time.
   - E3031
+  - W1030

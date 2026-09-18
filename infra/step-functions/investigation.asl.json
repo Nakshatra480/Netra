@@ -1,0 +1,214 @@
+{
+  "Comment": "Netra investigation lifecycle: a code change becomes an investigation awaiting human approval. Remediation is deliberately not part of this workflow.",
+  "StartAt": "CreateInvestigation",
+  "TimeoutSeconds": 2400,
+  "States": {
+    "CreateInvestigation": {
+      "Comment": "Idempotent: a replayed event finds the record already present and stops.",
+      "Type": "Task",
+      "Resource": "${CreateInvestigationFunctionArn}",
+      "ResultPath": "$.investigation",
+      "Retry": [
+        {
+          "Comment": "Transient DynamoDB and Lambda faults only. A malformed event is not retried, because replaying it cannot make it valid.",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "StoreUnavailable"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "Comment": "A malformed event has no investigation to mark failed, so it fails the execution directly.",
+          "ErrorEquals": ["InvalidEventError"],
+          "ResultPath": "$.error",
+          "Next": "RejectMalformedEvent"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FailExecution"
+        }
+      ],
+      "Next": "AlreadyInvestigated?"
+    },
+
+    "AlreadyInvestigated?": {
+      "Comment": "The idempotency gate. Two deliveries of one change produce one investigation.",
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.investigation.duplicate",
+          "BooleanEquals": true,
+          "Next": "DuplicateIgnored"
+        }
+      ],
+      "Default": "RunInvestigation"
+    },
+
+    "DuplicateIgnored": {
+      "Type": "Succeed",
+      "Comment": "Not an error: the change is already being or has been investigated."
+    },
+
+    "RejectMalformedEvent": {
+      "Type": "Fail",
+      "Error": "InvalidEventError",
+      "Cause": "The Netra.CodeChange event did not describe an investigable change."
+    },
+
+    "RunInvestigation": {
+      "Comment": "One ephemeral Fargate task performs PREPARING through RECOMMENDATION and records each transition as it happens.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "ResultPath": "$.task",
+      "TimeoutSeconds": 1800,
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "PropagateTags": "TASK_DEFINITION",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ${SubnetIds},
+            "SecurityGroups": ["${SecurityGroupId}"],
+            "AssignPublicIp": "ENABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "investigator",
+              "Environment": [
+                { "Name": "NETRA_INVESTIGATION_ID", "Value.$": "$.investigation.investigationId" },
+                { "Name": "NETRA_REPOSITORY", "Value.$": "$.investigation.repository" },
+                { "Name": "NETRA_HEAD_SHA", "Value.$": "$.investigation.commitSha" },
+                { "Name": "NETRA_BASE_SHA", "Value.$": "$.investigation.baseSha" },
+                { "Name": "NETRA_CHANGE_TITLE", "Value.$": "$.investigation.changeTitle" },
+                {
+                  "Name": "NETRA_INSTALLATION_ID",
+                  "Value.$": "States.Format('{}', $.investigation.installationId)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "Retry": [
+        {
+          "Comment": "Capacity and throttling are worth retrying; a task that ran and failed is not, because it would fail identically.",
+          "ErrorEquals": [
+            "ECS.AmazonECSException",
+            "ECS.InvalidParameterException",
+            "ECS.ServerException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 20,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FailInvestigation"
+        }
+      ],
+      "Next": "ConfirmOutcome"
+    },
+
+    "ConfirmOutcome": {
+      "Comment": "Success is decided by the stored record, not by the task exiting zero.",
+      "Type": "Task",
+      "Resource": "${ConfirmOutcomeFunctionArn}",
+      "ResultPath": "$.outcome",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.SdkClientException",
+            "StoreUnavailable"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FailInvestigation"
+        }
+      ],
+      "Next": "ReachedApproval?"
+    },
+
+    "ReachedApproval?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome.awaitingApproval",
+          "BooleanEquals": true,
+          "Next": "AwaitingApproval"
+        },
+        {
+          "Variable": "$.outcome.status",
+          "StringEquals": "RESOLVED",
+          "Next": "NoFindingToApprove"
+        }
+      ],
+      "Default": "FailInvestigation"
+    },
+
+    "AwaitingApproval": {
+      "Type": "Succeed",
+      "Comment": "Terminal for this milestone. Remediation requires an explicit human decision, which arrives outside this workflow."
+    },
+
+    "NoFindingToApprove": {
+      "Type": "Succeed",
+      "Comment": "The investigation completed and found nothing that needs a human decision."
+    },
+
+    "FailInvestigation": {
+      "Comment": "Every failure path records a readable reason, so an investigation is never left silently stuck.",
+      "Type": "Task",
+      "Resource": "${RecordFailureFunctionArn}",
+      "Parameters": {
+        "investigationId.$": "$.investigation.investigationId",
+        "error.$": "$.error"
+      },
+      "ResultPath": "$.failure",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.failureError",
+          "Next": "FailExecution"
+        }
+      ],
+      "Next": "FailExecution"
+    },
+
+    "FailExecution": {
+      "Type": "Fail",
+      "Error": "InvestigationFailed",
+      "Cause": "The investigation did not reach a conclusion. See the investigation record for the reason."
+    }
+  }
+}

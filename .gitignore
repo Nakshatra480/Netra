@@ -45,3 +45,4 @@ openrouter_api.md
 
 # build artifacts
 services/webhook/dist/
+services/orchestrator/dist/
