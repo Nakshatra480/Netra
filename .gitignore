@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+.next/
+coverage/
+*.tsbuildinfo
+
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*-private-key*
+firebase-adminsdk*.json
+service-account*.json
+.aws/
+aws-exports.js
+
+# sam / cdk
+.aws-sam/
+samconfig.toml
+packaged.yaml
+
+.DS_Store
+.vscode/
+.idea/
