@@ -11,6 +11,7 @@ because remediation requires a human decision that arrives as a separate call.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from .config import InvestigatorConfig
 from .context import prefilter
 from .events import EventEmitter, new_id
 from .sandbox import DockerSandbox, SandboxError, SandboxLimits
+from .sandbox.executor import SandboxExecutor
 from .tools import InvestigationTools, ToolCallRecord
 
 logger = logging.getLogger(__name__)
@@ -58,17 +60,32 @@ class InvestigationOutcome:
     model_metadata: dict[str, Any] = field(default_factory=dict)
 
 
+#: How a sandbox is created. Defaults to a container per investigation, which
+#: is right when Netra runs on a shared machine. Where the surrounding compute
+#: is already an ephemeral single-purpose container -- a Fargate task -- the
+#: caller supplies a factory that uses the task itself as the boundary, because
+#: Fargate cannot nest containers at all.
+SandboxFactory = Callable[[Path, str, SandboxLimits, str], SandboxExecutor]
+
+
+def _default_sandbox(
+    repo_path: Path, image: str, limits: SandboxLimits, checkout: str
+) -> SandboxExecutor:
+    return DockerSandbox(repo_path, image=image, limits=limits, checkout=checkout)
+
+
 def run_investigation(
     request: InvestigationRequest,
     emitter: EventEmitter,
     config: InvestigatorConfig | None = None,
+    sandbox_factory: SandboxFactory | None = None,
 ) -> InvestigationOutcome:
     """Run an investigation up to the point a human must decide."""
     cfg = config or InvestigatorConfig.from_env()
     emitter.status_changed("CREATED")
 
     try:
-        return _run(request, emitter, cfg)
+        return _run(request, emitter, cfg, sandbox_factory or _default_sandbox)
     except SandboxError as err:
         reason = f"The analysis sandbox could not be prepared: {err}"
         logger.error("sandbox failure", extra={"investigation": request.investigation_id})
@@ -85,6 +102,7 @@ def _run(
     request: InvestigationRequest,
     emitter: EventEmitter,
     cfg: InvestigatorConfig,
+    sandbox_factory: SandboxFactory,
 ) -> InvestigationOutcome:
     emitter.status_changed("PREPARING")
     activity = emitter.activity_started("Preparing an isolated analysis workspace")
@@ -92,9 +110,8 @@ def _run(
     limits = SandboxLimits(
         memory_mb=cfg.sandbox_memory_mb, command_timeout_s=cfg.sandbox_timeout_s
     )
-    with DockerSandbox(
-        request.repo_path, image=cfg.sandbox_image, limits=limits, checkout=request.head_sha
-    ) as sandbox:
+    sandbox = sandbox_factory(request.repo_path, cfg.sandbox_image, limits, request.head_sha)
+    with sandbox:
         emitter.activity_completed(activity, "Workspace ready: no network, read-only, non-root")
         tools = InvestigationTools(sandbox, emitter, request.base_sha, request.head_sha)
 
