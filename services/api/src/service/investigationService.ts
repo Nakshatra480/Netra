@@ -298,6 +298,10 @@ export class InvestigationService {
       return;
     }
 
+    // Fetch the repository so we can obtain the GitHub installation ID and the
+    // default branch for the PR target, without those values coming from the client.
+    const repository = await this.store.getRepository(investigation.repositoryId);
+
     await this.#emit(investigation.id, { type: 'status_changed', status: 'REMEDIATING', reason: null });
 
     const diffDir = await mkdtemp(join(tmpdir(), 'netra-diff-'));
@@ -305,6 +309,18 @@ export class InvestigationService {
     await writeFile(diffFile, remediation.diff, 'utf8');
 
     try {
+      const extraArgs: string[] = [];
+      const installationId = repository?.githubInstallationId;
+      if (installationId != null && investigation.change.provider === 'GITHUB') {
+        const baseBranch =
+          investigation.change.branch ?? repository?.defaultBranch ?? 'main';
+        extraArgs.push(
+          '--installation-id', String(installationId),
+          '--base-branch', baseBranch,
+          '--repository', investigation.change.repositoryFullName,
+        );
+      }
+
       const outcome = await this.runner.run(
         {
           python: this.config.investigatorPython,
@@ -319,6 +335,7 @@ export class InvestigationService {
             '--finding-title', finding.title,
             '--approver', identity.userId,
             '--diff-file', diffFile,
+            ...extraArgs,
           ],
           env: investigatorEnv(this.config),
         },
@@ -330,8 +347,11 @@ export class InvestigationService {
       if (verification) await this.store.putVerifications(investigation.id, [verification]);
 
       const resolved = result.status === 'RESOLVED';
+      const prUrl = typeof result.prUrl === 'string' ? result.prUrl : null;
+
       await this.store.updateAction(action.id, {
         status: resolved ? 'EXECUTED' : 'FAILED',
+        resultUrl: prUrl,
       });
       await this.store.updateFindingStatus(finding.id, resolved ? 'RESOLVED' : 'REMEDIATED');
       await this.store.updateInvestigation(investigation.id, {

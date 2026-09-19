@@ -422,6 +422,63 @@ Resources:
         Variables:
           NETRA_TABLE_NAME: !Ref InvestigationsTable
 
+  # --------------------------------------------------------------------------
+  # Approval endpoint
+  # --------------------------------------------------------------------------
+  # A single Lambda that validates the AWAITING_APPROVAL state, records the
+  # approval in DynamoDB, and launches a Fargate remediation task. The Fargate
+  # task already has NETRA_GITHUB_APP_SECRET injected by the ECS agent from
+  # Secrets Manager — this Lambda never reads or logs any secret value.
+
+  ApproveInvestigationFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeployWorkflow
+    Properties:
+      FunctionName: !Sub 'netra-${Stage}-approve-investigation'
+      CodeUri: ../services/orchestrator/dist
+      Handler: approveInvestigation.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 30
+      Environment:
+        Variables:
+          NETRA_TABLE_NAME: !Ref InvestigationsTable
+          NETRA_CLUSTER_ARN: !GetAtt InvestigationCluster.Arn
+          NETRA_TASK_DEFINITION_ARN: !Ref InvestigatorTaskDefinition
+          NETRA_SUBNET_IDS: !Join [',', !Ref VpcSubnetIds]
+          NETRA_SECURITY_GROUP_ID: !GetAtt InvestigatorSecurityGroup.GroupId
+          NETRA_TASK_ROLE_ARN: !Ref TaskRoleArn
+          NETRA_TASK_EXECUTION_ROLE_ARN: !Ref TaskExecutionRoleArn
+      Events:
+        Approve:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApprovalApi
+            Path: /investigations/{id}/approve
+            Method: POST
+
+  ApprovalApi:
+    Type: AWS::Serverless::HttpApi
+    Condition: DeployWorkflow
+    Properties:
+      StageName: !Ref Stage
+      Description: Netra human approval endpoint for investigation remediations.
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+
+  ApproveInvestigationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployWorkflow
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/netra-${Stage}-approve-investigation'
+      RetentionInDays: !Ref LogRetentionDays
+
   InvestigationStateMachineLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: DeployWorkflow
@@ -594,3 +651,16 @@ Outputs:
     Condition: DeployWorkflow
     Description: Secret holding the OpenRouter keys; populate it out of band.
     Value: !Sub 'netra/${Stage}/model/openrouter'
+
+  ApprovalApiUrl:
+    Condition: DeployWorkflow
+    Description: >-
+      Approval endpoint. POST /investigations/{id}/approve with {actionId} in
+      the JSON body to approve a AWAITING_APPROVAL investigation.
+    Value: !Sub 'https://${ApprovalApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}'
+
+  ApproveInvestigationFunctionName:
+    Condition: DeployWorkflow
+    Description: Lambda function name for the approval handler.
+    Value: !Ref ApproveInvestigationFunction
+

@@ -68,6 +68,15 @@ const configSchema = z.object({
     .default('true')
     .transform((v) => v !== 'false'),
 
+  /**
+   * GitHub App credentials forwarded to the investigator subprocess.
+   *
+   * The value is the JSON payload stored in the `netra/{stage}/github/app`
+   * Secrets Manager secret: `{"appId": "…", "privateKey": "…"}`. It is never
+   * logged and never passed to any subprocess that does not need it.
+   */
+  githubAppSecret: z.string().optional(),
+
   /** Local development only: how the API runs the investigator. */
   investigatorPython: z
     .string()
@@ -106,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     investigatorPython: env.NETRA_INVESTIGATOR_PYTHON,
     investigatorCwd: env.NETRA_INVESTIGATOR_CWD,
     demoRepoBuilder: env.NETRA_DEMO_REPO_BUILDER,
+    githubAppSecret: env.NETRA_GITHUB_APP_SECRET,
   });
 
   if (!parsed.success) {
@@ -138,6 +148,8 @@ export function investigatorEnv(config: Config): NodeJS.ProcessEnv {
   pass('MAX_MODEL_TURNS', config.maxModelTurns);
   pass('MAX_INVESTIGATION_COST_USD', config.maxInvestigationCostUsd);
   pass('NETRA_SANDBOX_IMAGE', process.env.NETRA_SANDBOX_IMAGE);
+  // Never log this — it contains the App private key.
+  pass('NETRA_GITHUB_APP_SECRET', config.githubAppSecret);
   return env;
 }
 

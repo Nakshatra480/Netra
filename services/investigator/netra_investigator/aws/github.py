@@ -166,6 +166,100 @@ def clone_repository(
     return destination
 
 
+def push_branch(
+    token: str,
+    repo_path: Path,
+    branch: str,
+    full_name: str,
+    *,
+    timeout_s: float = 120.0,
+) -> None:
+    """Force-push a local branch to GitHub using an installation token.
+
+    The token is passed through the same askpass helper used by clone_repository,
+    so it is never embedded in the remote URL or any git-tracked file.
+    """
+    with tempfile.TemporaryDirectory(prefix="netra-askpass-") as helper_dir:
+        askpass = Path(helper_dir) / "askpass.sh"
+        askpass.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "*Username*) echo x-access-token ;;\n"
+            '*) cat "$GIT_TOKEN_FILE" ;;\n'
+            "esac\n"
+        )
+        askpass.chmod(0o700)
+
+        token_file = Path(helper_dir) / "token"
+        token_file.write_text(token)
+        token_file.chmod(0o600)
+
+        env = {
+            "GIT_ASKPASS": str(askpass),
+            "GIT_TOKEN_FILE": str(token_file),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": helper_dir,
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+        }
+
+        _git(
+            [
+                "-C", str(repo_path),
+                "push", "--quiet", "--force-with-lease",
+                f"https://github.com/{full_name}.git",
+                f"HEAD:refs/heads/{branch}",
+            ],
+            env=env,
+            timeout_s=timeout_s,
+        )
+
+
+def create_pull_request(
+    token: str,
+    full_name: str,
+    *,
+    head: str,
+    base: str,
+    title: str,
+    body: str,
+) -> str:
+    """Open a pull request and return its html_url.
+
+    Uses the GitHub REST API (POST /repos/{full_name}/pulls). The token is
+    sent only in the Authorization header, never in the URL.
+    """
+    payload = json.dumps({"title": title, "body": body, "head": head, "base": base}).encode()
+    request = urllib.request.Request(  # noqa: S310 – fixed https GitHub endpoint
+        f"{GITHUB_API}/repos/{full_name}/pulls",
+        data=payload,
+        method="POST",
+        headers={
+            "authorization": f"Bearer {token}",
+            "accept": "application/vnd.github+json",
+            "content-type": "application/json",
+            "user-agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            data = json.load(response)
+            html_url = str(data["html_url"])
+            logger.info("pull request created", extra={"pr_url": html_url})
+            return html_url
+    except urllib.error.HTTPError as err:
+        body_text = ""
+        try:
+            body_text = err.read().decode("utf-8", errors="replace")[:200]
+        except Exception:  # noqa: BLE001
+            pass
+        raise GitHubUnavailable(
+            f"GitHub refused PR creation (HTTP {err.code}): {body_text}"
+        ) from None
+    except (urllib.error.URLError, TimeoutError) as err:
+        raise GitHubUnavailable(f"GitHub could not be reached: {err}") from None
+
+
 def _has_commit(repo: Path, commit: str) -> bool:
     result = subprocess.run(
         ["git", "-C", str(repo), "cat-file", "-e", f"{commit}^{{commit}}"],
@@ -190,6 +284,8 @@ __all__ = [
     "AppCredentials",
     "GitHubUnavailable",
     "clone_repository",
+    "create_pull_request",
     "installation_token",
     "mint_app_jwt",
+    "push_branch",
 ]
