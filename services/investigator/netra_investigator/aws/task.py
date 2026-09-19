@@ -64,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
     task_mode = os.environ.get("NETRA_TASK_MODE", "investigate").strip().lower()
     if task_mode == "remediate":
         from ..__main__ import _remediate_from_env
-        from ..config import InvestigatorConfig
         return _remediate_from_env(InvestigatorConfig.from_env())
 
     try:

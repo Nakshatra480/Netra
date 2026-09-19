@@ -1,12 +1,16 @@
 import { useCallback, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import type { Finding } from '@netra/domain';
 import {
   AlertTriangle,
   ArrowUpRight,
+  FileCode,
   GitBranch,
   GitCommitHorizontal,
   GitPullRequest,
   RefreshCw,
+  ShieldCheck,
+  ShieldX,
 } from 'lucide-react';
 import { Button, Mono, Panel, Skeleton } from '@/components/primitives';
 import { SeverityBadge, StatusBadge } from '@/components/status';
@@ -184,6 +188,15 @@ export function InvestigationPage({ session }: { session: Session }) {
         <ProvenanceBar provenance={provenance} />
       </Panel>
 
+      {/* ── Finding summary card(s) ───────────────────────────────────────── */}
+      {state.findings.length > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" role="list" aria-label="Findings">
+          {state.findings.map((f) => (
+            <FindingCard key={f.id} finding={f} />
+          ))}
+        </div>
+      ) : null}
+
       {/* ── Workspace grid: graph + terminal / activity + evidence ─────────── */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="grid min-h-0 grid-rows-[minmax(260px,1fr)_minmax(200px,0.85fr)] gap-3">
@@ -217,6 +230,63 @@ export function InvestigationPage({ session }: { session: Session }) {
         onReject={reject}
       />
     </div>
+  );
+}
+
+/** One finding — summarises the consequence, verification status, and recommendation. */
+function FindingCard({ finding }: { finding: Finding }) {
+  const isVerified = finding.verificationStatus === 'VERIFIED';
+  const isRefuted = finding.verificationStatus === 'REFUTED';
+
+  return (
+    <article
+      role="listitem"
+      className="panel flex flex-col gap-3 p-4 transition-colors"
+      aria-label={finding.title}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {isVerified ? (
+            <ShieldCheck size={15} className="shrink-0 text-[--color-state-severe]" />
+          ) : isRefuted ? (
+            <ShieldX size={15} className="shrink-0 text-[--color-ink-subtle]" />
+          ) : (
+            <AlertTriangle size={15} className="shrink-0 text-[--color-state-review]" />
+          )}
+          <h3 className="text-sm font-semibold leading-snug text-[--color-ink]">{finding.title}</h3>
+        </div>
+        <span
+          className={[
+            'shrink-0 rounded px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide',
+            isVerified
+              ? 'bg-[color-mix(in_oklch,var(--color-state-severe)_15%,transparent)] text-[--color-state-severe]'
+              : 'bg-[--color-surface-raised] text-[--color-ink-subtle]',
+          ].join(' ')}
+        >
+          {finding.verificationStatus.replace('_', ' ')}
+        </span>
+      </div>
+
+      <p className="text-xs leading-relaxed text-[--color-ink-muted]">{finding.description}</p>
+
+      {finding.affectedFiles.length > 0 ? (
+        <ul className="space-y-1">
+          {finding.affectedFiles.map((file) => (
+            <li key={file} className="flex items-center gap-1.5">
+              <FileCode size={11} className="shrink-0 text-[--color-ink-subtle]" />
+              <span className="mono truncate text-[0.7rem] text-[--color-ink-muted]">{file}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {finding.recommendation ? (
+        <div className="border-t border-[--color-line] pt-3">
+          <p className="text-[0.68rem] uppercase tracking-[0.07em] text-[--color-ink-subtle]">Recommendation</p>
+          <p className="mt-1 text-xs leading-relaxed text-[--color-ink-muted]">{finding.recommendation}</p>
+        </div>
+      ) : null}
+    </article>
   );
 }
 

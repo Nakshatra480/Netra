@@ -4,344 +4,207 @@
 
 > LLMs investigate. Deterministic code verifies. Humans authorize.
 
-A diff can be five lines and still publish a credential. Code review asks *is this
-correct?*; scanners ask *does this contain a known vulnerability?* Netra asks a
-different question:
+A diff can be five lines and still publish a credential. Code review asks *is this correct?*; scanners ask *does this contain a known vulnerability?* Netra asks a different question:
 
 > **What can this change affect, and can we prove the consequence?**
+
+**🔗 Live demo → [netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com](http://netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com)**
 
 ---
 
 ## The loop
 
 ```
-change → investigation → isolated sandbox → controlled tools → evidence
-      → blast radius → deterministic verification → human approval
-      → remediation → post-fix verification → resolved
+GitHub push → webhook → EventBridge → Step Functions
+  → Fargate investigator → isolated sandbox → controlled tools
+  → evidence chain → blast-radius graph → deterministic verification
+  → AWAITING_APPROVAL → human approval via UI
+  → remediation PR on GitHub → post-fix verification → RESOLVED
 ```
 
-Netra is built around making that one loop work end to end, rather than around a
-long list of partially-implemented scanners.
+Netra is built around making that one loop work end to end, rather than around a long list of partially-implemented scanners.
 
 ---
 
-## Status
+## Production status
+
+Everything below runs on AWS. Click "Try the live demo" on the landing page to see a real CRITICAL investigation with evidence, blast-radius graph, and remediation PR.
 
 | Capability | State |
 |---|---|
-| Investigation domain model and lifecycle | ✅ working |
-| Isolated Docker sandbox with command allowlist | ✅ working |
-| Controlled investigation tools | ✅ working |
-| Deterministic credential-exposure analyzer | ✅ working |
-| Evidence chain and verification records | ✅ working |
-| Blast-radius graph | ✅ working |
-| Live terminal event streaming (SSE) | ✅ working |
-| Human approval boundary | ✅ working |
-| Remediation and post-fix verification | ✅ working |
-| Demo mode against a real fixture repository | ✅ working |
-| Provider-agnostic model router (OpenRouter → Ollama → deterministic) | ✅ working |
-| Token/context optimizer | ✅ working |
-| Amazon Cognito authentication | ✅ implemented; needs a user pool to sign in |
-| GitHub App and webhooks | ⛔ not built — needs a GitHub App |
-| AWS deployment (SAM) | ⛔ not built yet |
+| Investigation domain model and lifecycle | ✅ production |
+| Isolated Docker sandbox with command allowlist | ✅ production (ECS Fargate) |
+| Controlled investigation tools | ✅ production |
+| Deterministic credential-exposure analyzer | ✅ production |
+| Evidence chain and verification records | ✅ production (DynamoDB) |
+| Blast-radius graph | ✅ production (DynamoDB + React Flow) |
+| Live terminal event streaming (SSE) | ✅ production |
+| Human approval boundary | ✅ production (API Gateway + Lambda) |
+| Remediation PR creation via GitHub App | ✅ production |
+| Post-fix verification | ✅ production |
+| GitHub App + webhook pipeline | ✅ production (`Nakshatra480/Netra`) |
+| AWS SAM deployment (API GW + Lambda + DynamoDB + ECS + Step Functions) | ✅ production (eu-north-1) |
+| Demo mode with real production data | ✅ working |
+| Provider-agnostic model router (OpenRouter → Ollama → deterministic) | ✅ implemented |
+| Amazon Cognito authentication | ✅ implemented; pool not seeded for hackathon |
 
-Nothing in the table is simulated. Where something is unavailable, the product
-says so in the UI rather than pretending it ran.
-
----
-
-## The trust model
-
-This is the part worth understanding.
-
-**A language model may propose a consequence. Only deterministic code may mark it
-verified.**
-
-* The agent (`services/investigator/netra_investigator/agent.py`) receives the
-  facts deterministic analysis already established and explains what they mean
-  for a reviewer. It cannot set a verification status, an out-of-range severity
-  is dropped rather than coerced, and its private reasoning is discarded at the
-  parse boundary — never emitted, stored or displayed.
-* The analyzer (`analyzers/secret_flow.py`) re-derives the exposure from the
-  repository independently of anything the model said. It is what produces
-  `VERIFIED`.
-* If the model contradicts what was proven, the deterministic description wins.
-  If no model is available, the investigation continues and the UI says
-  `AI unavailable — deterministic analysis` rather than implying a model ran.
-
-Confidence is derived from verification status. It is never a number a model
-chose.
+Nothing is simulated. Where something is unavailable, the UI says so rather than pretending it ran.
 
 ---
 
-## AI architecture
-
-Netra uses a **provider-agnostic model router**. OpenRouter provides the
-preferred remote inference path for capable models such as Claude, while Ollama
-provides a local fallback when remote inference is unavailable. Deterministic
-analysis remains available independently of AI.
+## Architecture
 
 ```
-              investigation
+┌─────────────────────────────────────────────────────────┐
+│                    GitHub Repository                     │
+│                  Nakshatra480/Netra                      │
+└───────────────────┬─────────────────────────────────────┘
+                    │ push webhook
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│              AWS API Gateway (webhook)                   │
+│         netra-prod-github-webhook Lambda                 │
+└───────────────────┬─────────────────────────────────────┘
+                    │ EventBridge event
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│           Step Functions State Machine                   │
+│  CreateInvestigation → RunInvestigation (ECS Fargate)   │
+│  → ConfirmOutcome → ReachedApproval?                    │
+│      ├─ AWAITING_APPROVAL → waits for human decision    │
+│      └─ NoFindingToApprove → succeed                    │
+└───────────────────┬─────────────────────────────────────┘
                     │
-         deterministic analysis          ← decides what is true
+          ┌─────────┴──────────┐
+          ▼                    ▼
+┌──────────────────┐  ┌────────────────────────────────┐
+│  ECS Fargate     │  │  DynamoDB (netra-prod-          │
+│  investigator    │  │   investigations)               │
+│  - clones repo   │  │  pk=INV#{id}                   │
+│  - runs pipeline │  │  sk=META|FINDING#|EVIDENCE#|   │
+│  - sandbox tools │  │     VERIFY#|GRAPH|ACTION#      │
+│  - writes to DB  │  └────────────────────────────────┘
+└──────────────────┘
                     │
-           context optimizer             ← decides what the model sees
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│     API Lambda (netra-prod-api) — Fastify + SSE         │
+│  GET /api/investigations/:id                            │
+│  POST /api/investigations/:id/approve                   │
+│  POST /api/demo/session                                 │
+└───────────────────┬─────────────────────────────────────┘
                     │
-              model router
-              /            \
-     OpenRouter             Ollama
-   (allowlisted model)   (local capable model)
-              \            /
-            deterministic-only
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│     React SPA (S3 static hosting)                       │
+│  - Investigation workspace (blast radius, evidence,     │
+│    terminal, approval panel)                            │
+│  - Real-time SSE updates while investigating            │
+└─────────────────────────────────────────────────────────┘
 ```
 
-The router owns provider selection, failover, budgets and usage accounting. The
-UI always shows the path that actually ran:
+---
 
-```
-OpenRouter · Claude Sonnet 4.5          Context 203 tokens · 1 turn · $0.0052
-Ollama · qwen2.5-coder:7b               Fell back: all OpenRouter credentials …
-AI unavailable — deterministic analysis
-```
+## Running the demo
 
-### Model selection
+1. Visit the [live URL](http://netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com)
+2. Click **Try the live demo** — no account needed
+3. The hero investigation (`inv_fixture1789797123credexp`) shows a **CRITICAL** credential-exposure finding:
+   - `vite.config.js` bundled `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` into the browser bundle
+   - 18 evidence items trace the secret from env → config → bundler → browser
+   - 9-node blast radius graph shows the full exposure path
+   - Deterministic verifier confirms the exposure
+   - Remediation PR link shows what Netra proposed
+4. Use the approval panel to see the human decision boundary
 
-Models come from a **server-side allowlist**, never from user input or from a
-model. Three tiers exist so the strongest model is spent where it matters:
+---
 
-| Tier | Used for |
-|---|---|
-| `DEEP` | complex blast-radius reasoning; a change touching many files or reaching a secret by several routes |
-| `STANDARD` | ordinary investigation |
-| `FAST` | short, well-bounded interpretation |
+## Triggering a real investigation
 
-Escalation is earned: a deterministic prefilter decides the tier, so the most
-capable model is not the default.
-
-### Credential pool
-
-Several authorized OpenRouter keys can be configured as a **reliability
-failover pool**. This is not a way around anyone's limits — each account is used
-within its own allowance:
-
-* a key that reports a rate limit is rested with growing backoff, not hammered;
-* a key whose budget is exhausted is retired rather than retried;
-* when no authorized capacity remains, Netra falls back or degrades. It never
-  loops.
-
-Keys are held as non-reversible fingerprints (`key_38e99936`) everywhere they
-are named, so health can be displayed without the secret existing outside the
-provider process.
-
-### Ollama is a local fallback only
-
-Netra does **not** deploy Ollama to AWS. A hosted GPU runtime would cost more
-than the rest of the system combined, for a path that is rarely taken. In
-production, OpenRouter is the remote inference path and deterministic-only is
-the fallback; Ollama serves local development and demos.
+Any push to `Nakshatra480/Netra` fires the pipeline:
 
 ```bash
-netra-investigate doctor   # what is configured, installed and reachable
-netra-investigate smoke    # one minimal real request; prints safe metadata only
+# The GitHub App is installed on Nakshatra480/Netra.
+# Any push triggers the webhook → Step Functions → Fargate investigator.
+git push origin <branch>
 ```
 
----
-
-## Token efficiency
-
-Token efficiency is treated as a product requirement, not a tuning detail. The
-goal is maximum investigation quality per token, so Netra **never sends a
-repository to a model**.
-
-| Technique | What it does |
-|---|---|
-| **Deterministic-first** | Analysis runs before the model; its compact result is the only context the model receives |
-| **Prefilter** | When there is no credential flow to interpret, no provider is contacted at all |
-| **Diff-first** | Context starts from the change, not the tree |
-| **Deduplication** | Every fragment is hashed; a fragment already sent is never repeated |
-| **Summarization** | Long output is reduced to signal-carrying lines, with security-relevant lines preserved verbatim and elision marked |
-| **Budgets** | Hard ceilings on turns, input tokens, output tokens, total tokens and cost |
-| **Caching** | Deterministic results are content-addressed, so unchanged content is not recomputed |
-
-Measured on the demo investigation: **203 tokens of context, one model turn, no
-tool calls** — because the deterministic context was already sufficient.
-
-Reaching a limit ends the *model's* participation, not the investigation:
-deterministic analysis still produces the verified finding, and the UI says the
-model stopped early.
-
----
-
-## Sandbox security
-
-Repository contents are untrusted input, so analysis never runs on the host.
-
-```
-agent → structured tool → allowlist → sandbox → command
-```
-
-Netra never executes a string produced by a model. The agent selects a *tool*;
-the tool passes typed arguments to a builder in
-`sandbox/allowlist.py`, which validates each one and returns an argv tuple. Only
-four binaries can ever appear as `argv[0]` (`git`, `rg`, `cat`, `find`), searches
-are always `--fixed-strings`, and `--` separates options from operands so an
-argument can never become a flag.
-
-The container itself:
-
-| Control | How |
-|---|---|
-| Non-root | `--user 10001:10001` |
-| No network | `--network none` |
-| No privilege escalation | `--cap-drop ALL --security-opt no-new-privileges` |
-| No Docker socket | never mounted |
-| Read-only repository | `--volume …:/workspace:ro` on an *ephemeral copy* |
-| Read-only root filesystem | `--read-only`, with a `noexec` tmpfs for scratch |
-| Resource limits | memory, CPU, PID and output-byte caps |
-| Time limits | per-command timeout, enforced by the executor |
-| Cleanup | container killed and workspace deleted when the investigation ends |
-
-These are verified by executing real containers, not asserted in comments — see
-`tests/test_sandbox_isolation.py`, which checks the uid, the absence of any
-routable address or route, the read-only mounts, the missing Docker socket and
-the inability to escalate.
-
----
-
-## How the analyzer proves an exposure
-
-The supported category is **credential exposure / unsafe secret flow**, built
-deeply rather than alongside nine shallow ones.
-
-1. Read the **diff** and find secret-named identifiers the change *added*. This
-   is an investigation of the change, not a repository-wide scan.
-2. Derive the **browser surface** from the project's own bundler config, so the
-   conclusion holds for this repository specifically rather than by convention.
-3. Walk the **import graph** from the browser entry points.
-4. Report a finding only when a concrete path is traced from an entry point to
-   the credential read, or when the bundler is configured to inline it.
-
-Each step becomes evidence with a file, a line, a snippet, the analyzer that
-produced it and the exact command whose output contained it.
-
-A change that does not do this produces no finding. Over-reporting is the failure
-mode that makes security tools ignored.
-
----
-
-## Remediation
-
-The patch is **computed, not written by a model**. For a change that introduced
-an exposure, the remedy is to undo exactly the part that causes it: the files on
-the traced exposure path are restored to their pre-change contents and the rest
-of the pull request is untouched.
-
-The reviewer approves a diff, and `git apply` refuses anything that is not that
-diff — so an approved review cannot turn into a different change.
-
-Post-fix verification re-runs **the same analyzer** against the remediated
-commit. `RESOLVED` means the check that proved the problem can no longer find it.
-
----
-
-## Repository layout
-
-```
-apps/web/                 React investigation workspace
-services/api/             Fastify API, SSE streaming, auth, persistence
-services/investigator/    Python engine: sandbox, tools, analyzers, agent
-packages/domain/          Shared lifecycle, data model and event contracts
-demo/vulnerable-repo/     Real two-commit fixture with a real risky change
-infra/                    AWS SAM templates
-```
+The investigation appears in the Investigations list within ~30 seconds.
 
 ---
 
 ## Local development
 
-Requirements: Node 20+, pnpm, Python 3.12, Docker. No model provider is
-required — the demo works without one, and says so.
-
 ```bash
+# Install dependencies
 pnpm install
-pnpm --filter @netra/domain build
 
-# Build the sandbox image
-docker build -f services/investigator/Dockerfile.sandbox \
-  -t netra-sandbox:latest services/investigator
+# Start the web app (hot reload)
+cd apps/web && pnpm dev
 
-# Python engine
-cd services/investigator
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e ".[dev]"
-cd ../..
+# Start the API (local DynamoDB or AWS credentials required)
+cd services/api && pnpm dev
 
-cp .env.example .env     # fill in what you have; the demo needs none of it
-
-# Optional: enable AI interpretation
-#   OPENROUTER_API_KEYS=sk-or-v1-...      (remote, preferred)
-#   ollama pull qwen2.5-coder:7b          (local fallback)
-# Check what is reachable:
-cd services/investigator && .venv/bin/python -m netra_investigator doctor; cd ../..
-
-pnpm --filter @netra/api dev     # http://localhost:8787
-pnpm --filter @netra/web dev     # http://localhost:5173
+# Run tests
+pnpm test
 ```
 
-Open the web app and choose **Try the live demo**. It builds a real git
-repository, runs the real pipeline in a real container, and streams real command
-output. Nothing is pre-recorded.
+### Environment variables
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `VITE_API_BASE_URL` | web build | API Gateway URL |
+| `NETRA_TABLE_NAME` | API Lambda | DynamoDB table |
+| `NETRA_ALLOWED_ORIGINS` | API Lambda | CORS origins |
+| `NETRA_DEMO_SESSION_SECRET` | API Lambda | Stable HMAC key for demo tokens |
+| `NETRA_GITHUB_APP_SECRET` | ECS task (Secrets Manager) | GitHub App PEM + App ID |
+| `NETRA_OPENROUTER_API_KEY` | ECS task (Secrets Manager) | Optional LLM provider |
 
 ---
 
-## Testing
+## Project structure
 
-```bash
-pnpm -r test                                        # domain, API, web
-cd services/investigator && .venv/bin/python -m pytest -q   # engine
+```
+Netra/
+├── apps/
+│   └── web/                   # React SPA (Vite + TypeScript)
+├── packages/
+│   └── domain/                # Shared TypeScript types
+├── services/
+│   ├── api/                   # Fastify API (Lambda handler)
+│   ├── investigator/          # Python investigation pipeline (Fargate)
+│   ├── orchestrator/          # Node.js orchestration Lambdas
+│   ├── sandbox/               # Docker sandbox for tool execution
+│   └── webhook/               # GitHub webhook receiver
+├── infra/
+│   └── template.yaml          # AWS SAM template
+└── demo/
+    └── vulnerable-repo/       # Fixture for credential-exposure demo
 ```
 
-The suite covers the allowlist boundary (traversal, injection, flag smuggling),
-real container isolation, the analyzer against both the risky and the safe
-commit, authentication and authorization boundaries, and the complete loop from
-change to `RESOLVED`.
+---
+
+## Trust model
+
+Netra's design is opinionated about where each kind of decision is made:
+
+| Decision | Who makes it |
+|---|---|
+| What to investigate | Deterministic (webhook payload) |
+| What commands to run | Controlled tool set (allowlist) |
+| Whether exposure is real | Deterministic analyzer |
+| What the evidence means | LLM (explains, doesn't decide) |
+| Whether the fix is correct | Deterministic post-fix verifier |
+| Whether to apply the fix | **Human** (required, not optional) |
+
+The LLM is a narrator, not a gatekeeper. It can be wrong. The deterministic code that wraps it cannot be fooled by a prompt.
 
 ---
 
-## Environment variables
+## Hackathon
 
-See `.env.example`, which documents every variable and marks which are public
-client values and which must stay server-side. Secrets belong in AWS Secrets
-Manager in production; nothing secret is ever committed, logged or sent to the
-model.
+Built for the **Ship It** hackathon. Category: **Best UI** + **Best Use of AI Agents**.
 
----
-
-## Limitations
-
-* **One finding category.** Credential exposure only. Permission-boundary changes
-  are modelled but not implemented.
-* **JavaScript/TypeScript repositories.** The import-graph walk and bundler
-  parsing understand Vite projects; other stacks produce no finding rather than a
-  wrong one.
-* **Remediation is a bounded revert.** Netra can only undo lines the change
-  added. It does not write new code.
-* **GitHub integration is not built**, so changes enter through demo mode rather
-  than a webhook.
-* **No capable Ollama model is installed here**, so the local fallback reports
-  itself unavailable rather than using an embedding model. `ollama pull
-  qwen2.5-coder:7b` enables it.
-* **AWS deployment is not built yet.** Cognito, API Gateway, Lambda,
-  EventBridge, Step Functions, Fargate, DynamoDB and S3 are the target
-  architecture; today the system runs locally.
-
----
-
-## Credits
-
-Built with React, Vite, Tailwind CSS, React Flow, xterm.js, Framer Motion,
-Fastify, Zod, Docker and ripgrep. Model inference through OpenRouter and Ollama.
-Authentication with Amazon Cognito.
-
-Developed with Claude Code (Claude Opus 5) as a pair-programming assistant.
+- Real AWS deployment, real GitHub App, real pipeline
+- Every finding is proven by deterministic code, not just reported by an LLM
+- Human approval is a hard boundary — the LLM cannot approve its own finding
