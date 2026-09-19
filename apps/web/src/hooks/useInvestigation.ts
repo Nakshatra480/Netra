@@ -103,6 +103,9 @@ export function useInvestigation(session: Session | null, investigationId: strin
   }, [refresh]);
 
   useEffect(() => {
+    // Terminal investigations have all their data; the event stream is only
+    // useful while the investigation is actively running.
+    if (state.status && TERMINAL_STATUSES.includes(state.status)) return;
     if (!session || !investigationId) return;
 
     let closed = false;
@@ -145,7 +148,8 @@ export function useInvestigation(session: Session | null, investigationId: strin
       sourceRef.current?.close();
       sourceRef.current = null;
     };
-  }, [session, investigationId, applyEvent, refresh]);
+  }, [session, investigationId, state.status, applyEvent, refresh]);
+
 
   // Once an investigation reaches a terminal state, reconcile with the store so
   // anything the stream missed is still shown.

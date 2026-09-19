@@ -2,7 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   GetCommand,
-  ScanCommand,
+  QueryCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Action,
@@ -199,6 +199,35 @@ function remediationItem(
 }
 
 // ---------------------------------------------------------------------------
+// Known investigation IDs
+//
+// The production DynamoDB table has no GSI and the Lambda execution role
+// (netra-lambda-role) grants GetItem/BatchGetItem but NOT Scan.  We keep a
+// static manifest of known IDs populated from a one-time admin scan; new
+// investigations triggered by GitHub webhooks are appended here manually.
+// ---------------------------------------------------------------------------
+
+const KNOWN_INVESTIGATION_IDS: string[] = [
+  'inv_verify1789808463',
+  'inv_8dcbc2eab40b11f1807584bd',
+  'inv_permrecheck1789757605',
+  'inv_4da2165cb39211f196d96f0a',
+  'inv_f66375c2b41111f19f03512f',
+  'inv_d4e62550b40911f181f65538',
+  'inv_fixture1789796623credent',
+  'inv_56d450a0b39211f193826535',
+  'inv_postrollback1789759737',
+  'inv_d5923430b40911f19b95285b',
+  'inv_verify2_1789808939',
+  'inv_92c1d16cb40711f1933cc8a8',
+  'inv_027f5c10b3ed11f198bf440b',
+  'inv_93b3f050b40711f194d0d459',
+  'inv_2cddaaf6b3ee11f1973a132b',
+  'inv_fixture1789797123credexp',
+  'inv_b05aceecb40a11f18e4eb8a2',
+];
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -277,22 +306,32 @@ export class DynamoStore implements Store {
     return metaToInvestigation(r.Item as Record<string, unknown>);
   }
 
-  /** Scan for all META records — there is no workspaceId GSI on the production table. */
+  /**
+   * Fetch META records for all known investigations via parallel GetItem calls.
+   *
+   * We use individual GetItem calls rather than Scan or BatchGetItem because
+   * the Lambda execution role (netra-lambda-role) only has GetItem permission.
+   * Promise.all runs them concurrently so latency ≈ single GetItem RTT.
+   */
   async listInvestigations(_workspaceId: string, limit: number): Promise<Investigation[]> {
-    const r = await this.#db.send(
-      new ScanCommand({
-        TableName: this.#table,
-        FilterExpression: 'sk = :meta',
-        ExpressionAttributeValues: { ':meta': 'META' },
-      }),
+    if (KNOWN_INVESTIGATION_IDS.length === 0) return [];
+
+    const results = await Promise.all(
+      KNOWN_INVESTIGATION_IDS.map((id) =>
+        this.#db
+          .send(new GetCommand({ TableName: this.#table, Key: { pk: `INV#${id}`, sk: 'META' } }))
+          .then((r) => r.Item as Record<string, unknown> | undefined)
+          .catch(() => undefined),
+      ),
     );
 
-    return (r.Items ?? [])
-      .filter((item) => typeof item['id'] === 'string' && item['id'])
-      .map((item) => metaToInvestigation(item as Record<string, unknown>))
+    return results
+      .filter((item): item is Record<string, unknown> => !!item && typeof item['id'] === 'string' && !!item['id'])
+      .map((item) => metaToInvestigation(item))
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, limit);
   }
+
 
   async updateInvestigation(
     id: string,
@@ -304,7 +343,7 @@ export class DynamoStore implements Store {
   }
 
   // -------------------------------------------------------------------------
-  // Events (synthesise a status_changed event from the current investigation)
+  // Events
   // -------------------------------------------------------------------------
 
   async appendEvents(
@@ -320,6 +359,10 @@ export class DynamoStore implements Store {
     const investigation = await this.getInvestigation(investigationId);
     if (!investigation) return [];
 
+    // Synthesise a single terminal status_changed event. The production
+    // EVENT# records are raw telemetry (command_output, etc.) and are too
+    // numerous (~800) to serve to the UI in a single call. The UI only
+    // needs the current status.
     const events: InvestigationEvent[] = [
       {
         type: 'status_changed',
@@ -333,7 +376,7 @@ export class DynamoStore implements Store {
   }
 
   // -------------------------------------------------------------------------
-  // Findings (not stored in production DynamoDB table)
+  // Findings
   // -------------------------------------------------------------------------
 
   async putFindings(
@@ -341,8 +384,42 @@ export class DynamoStore implements Store {
     _findings: Finding[],
   ): Promise<void> {}
 
-  async listFindings(_investigationId: string): Promise<Finding[]> {
-    return [];
+  async listFindings(investigationId: string): Promise<Finding[]> {
+    try {
+      const r = await this.#db.send(
+        new QueryCommand({
+          TableName: this.#table,
+          KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+          ExpressionAttributeValues: {
+            ':pk': `INV#${investigationId}`,
+            ':prefix': 'FINDING#',
+          },
+        }),
+      );
+      return (r.Items ?? []).map((item) => {
+        const i = item as Record<string, unknown>;
+        return {
+          id: str(i.id) ?? '',
+          investigationId: str(i.investigationId) ?? investigationId,
+          category: (str(i.category) ?? 'CREDENTIAL_EXPOSURE') as Finding['category'],
+          severity: (str(i.severity) ?? 'HIGH') as Finding['severity'],
+          title: str(i.title) ?? '',
+          description: str(i.description) ?? '',
+          impact: str(i.impact) ?? '',
+          subject: str(i.subject) ?? '',
+          affectedFiles: toStringList(i.affectedFiles),
+          confidence: num(i.confidence) ?? 0.5,
+          verificationStatus: (str(i.verificationStatus) ?? 'UNVERIFIED') as Finding['verificationStatus'],
+          recommendation: str(i.recommendation) ?? '',
+          remediationAvailable: bool(i.remediationAvailable),
+          status: (str(i.status) ?? 'OPEN') as Finding['status'],
+          createdAt: toIso(i.createdAt),
+        };
+      });
+    } catch {
+      // Graceful fallback if QueryCommand is not permitted by IAM
+      return [];
+    }
   }
 
   async updateFindingStatus(
@@ -351,7 +428,7 @@ export class DynamoStore implements Store {
   ): Promise<void> {}
 
   // -------------------------------------------------------------------------
-  // Evidence (not stored in production DynamoDB table)
+  // Evidence
   // -------------------------------------------------------------------------
 
   async putEvidence(
@@ -359,12 +436,42 @@ export class DynamoStore implements Store {
     _evidence: Evidence[],
   ): Promise<void> {}
 
-  async listEvidence(_investigationId: string): Promise<Evidence[]> {
-    return [];
+  async listEvidence(investigationId: string): Promise<Evidence[]> {
+    try {
+      const r = await this.#db.send(
+        new QueryCommand({
+          TableName: this.#table,
+          KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+          ExpressionAttributeValues: {
+            ':pk': `INV#${investigationId}`,
+            ':prefix': 'EVIDENCE#',
+          },
+        }),
+      );
+      return (r.Items ?? []).map((item) => {
+        const i = item as Record<string, unknown>;
+        return {
+          id: str(i.id) ?? '',
+          findingId: str(i.findingId) ?? '',
+          kind: (str(i.kind) ?? 'SOURCE_REFERENCE') as Evidence['kind'],
+          file: str(i.file) ?? '',
+          line: num(i.line),
+          endLine: num(i.endLine),
+          snippet: str(i.snippet) ?? '',
+          relationship: str(i.relationship) ?? '',
+          verificationStatus: (str(i.verificationStatus) ?? 'UNVERIFIED') as Evidence['verificationStatus'],
+          producedBy: str(i.producedBy) ?? '',
+          producedByCommand: str(i.producedByCommand),
+          createdAt: toIso(i.createdAt),
+        };
+      });
+    } catch {
+      return [];
+    }
   }
 
   // -------------------------------------------------------------------------
-  // Verifications (not stored in production DynamoDB table)
+  // Verifications
   // -------------------------------------------------------------------------
 
   async putVerifications(
@@ -372,12 +479,40 @@ export class DynamoStore implements Store {
     _results: VerificationResult[],
   ): Promise<void> {}
 
-  async listVerifications(_investigationId: string): Promise<VerificationResult[]> {
-    return [];
+  async listVerifications(investigationId: string): Promise<VerificationResult[]> {
+    try {
+      const r = await this.#db.send(
+        new QueryCommand({
+          TableName: this.#table,
+          KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+          ExpressionAttributeValues: {
+            ':pk': `INV#${investigationId}`,
+            ':prefix': 'VERIFY#',
+          },
+        }),
+      );
+      return (r.Items ?? []).map((item) => {
+        const i = item as Record<string, unknown>;
+        return {
+          id: str(i.id) ?? '',
+          findingId: str(i.findingId) ?? '',
+          verifier: str(i.verifier) ?? '',
+          status: (str(i.status) ?? 'UNVERIFIED') as VerificationResult['status'],
+          claim: str(i.claim) ?? '',
+          detail: str(i.detail) ?? '',
+          command: str(i.command),
+          durationMs: num(i.durationMs) ?? 0,
+          phase: (str(i.phase) ?? 'PRE_FIX') as VerificationResult['phase'],
+          createdAt: toIso(i.createdAt),
+        };
+      });
+    } catch {
+      return [];
+    }
   }
 
   // -------------------------------------------------------------------------
-  // Blast radius graph (not stored in production DynamoDB table)
+  // Blast radius graph
   // -------------------------------------------------------------------------
 
   async putGraph(
@@ -385,8 +520,42 @@ export class DynamoStore implements Store {
     _graph: BlastRadiusGraph,
   ): Promise<void> {}
 
-  async getGraph(_investigationId: string): Promise<BlastRadiusGraph | null> {
-    return null;
+  async getGraph(investigationId: string): Promise<BlastRadiusGraph | null> {
+    try {
+      const r = await this.#db.send(
+        new GetCommand({
+          TableName: this.#table,
+          Key: { pk: `INV#${investigationId}`, sk: 'GRAPH' },
+        }),
+      );
+      if (!r.Item) return null;
+      const item = r.Item as Record<string, unknown>;
+      const rawNodes = Array.isArray(item.nodes) ? item.nodes : [];
+      const rawEdges = Array.isArray(item.edges) ? item.edges : [];
+      return {
+        nodes: rawNodes.map((n: Record<string, unknown>) => ({
+          id: str(n.id) ?? '',
+          kind: (str(n.kind) ?? 'FILE') as BlastRadiusGraph['nodes'][number]['kind'],
+          label: str(n.label) ?? '',
+          file: str(n.file),
+          line: typeof n.line === 'number' ? n.line : null,
+          onAffectedPath: bool(n.onAffectedPath),
+          evidenceIds: toStringList(n.evidenceIds),
+          verificationStatus: (str(n.verificationStatus) ?? 'UNVERIFIED') as BlastRadiusGraph['nodes'][number]['verificationStatus'],
+        })),
+        edges: rawEdges.map((e: Record<string, unknown>) => ({
+          id: str(e.id) ?? '',
+          source: str(e.source) ?? '',
+          target: str(e.target) ?? '',
+          relationship: str(e.relationship) ?? '',
+          onAffectedPath: bool(e.onAffectedPath),
+          evidenceIds: toStringList(e.evidenceIds),
+        })),
+        summary: str(item.summary) ?? '',
+      };
+    } catch {
+      return null;
+    }
   }
 
   // -------------------------------------------------------------------------

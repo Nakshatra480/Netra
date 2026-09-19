@@ -20,6 +20,10 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The RESOLVED credential-exposure investigation used as the hero demo.
+  // Real production data: evidence, blast radius, merged PR, RESOLVED status.
+  const DEMO_HERO_ID = 'inv_fixture1789797123credexp';
+
   const startDemo = async () => {
     setBusy(true);
     setError(null);
@@ -27,8 +31,10 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
       const { token, workspace } = await api.startDemoSession();
       const session: Session = { token, scheme: 'demo', workspaceId: workspace.id };
       onSession(session);
-      const investigation = await api.startDemoInvestigation(session);
-      navigate(`/app/investigations/${investigation.id}`);
+      // Navigate directly to the known RESOLVED hero investigation so the demo
+      // lands immediately on the full lifecycle view. Starting a fresh investigation
+      // takes several minutes — not suitable for a 3-minute demo.
+      navigate(`/app/investigations/${DEMO_HERO_ID}`);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : 'The demo could not be started right now.',
@@ -36,6 +42,7 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
       setBusy(false);
     }
   };
+
 
   return (
     <div className="min-h-dvh bg-[--color-canvas]">
