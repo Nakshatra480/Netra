@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Action, Finding, Remediation, VerificationResult } from '@netra/domain';
 import { motion } from 'framer-motion';
-import { AlertOctagon, Check, GitPullRequest, ShieldCheck, X } from 'lucide-react';
+import { AlertOctagon, ArrowUpRight, Check, GitPullRequest, ShieldCheck, X } from 'lucide-react';
 import { Button, Mono } from '@/components/primitives';
 import { cn } from '@/lib/cn';
 
@@ -205,9 +205,26 @@ export function ApprovalPanel({
             </div>
           )
         ) : (
-          <div className="flex items-center gap-2 border-t border-[--color-line] pt-4 text-sm text-[--color-ink-muted]">
-            <Check size={14} className="text-[--color-state-resolved]" />
-            {action.decisionNote ? `“${action.decisionNote}”` : 'No note was recorded.'}
+          <div className="space-y-3 border-t border-[--color-line] pt-4">
+            <div className="flex items-center gap-2 text-sm text-[--color-ink-muted]">
+              <Check size={14} className="text-[--color-state-resolved]" />
+              {action.decisionNote ? `"${action.decisionNote}"` : 'No note was recorded.'}
+            </div>
+            {action.resultUrl ? (
+              <a
+                href={action.resultUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group inline-flex items-center gap-2 rounded-md border border-[color-mix(in_oklch,var(--color-state-resolved)_40%,transparent)] bg-[color-mix(in_oklch,var(--color-state-resolved)_10%,transparent)] px-3 py-2 text-sm font-medium text-[--color-state-resolved] transition-colors hover:bg-[color-mix(in_oklch,var(--color-state-resolved)_15%,transparent)]"
+              >
+                <GitPullRequest size={14} />
+                View remediation PR
+                <ArrowUpRight
+                  size={13}
+                  className="transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                />
+              </a>
+            ) : null}
           </div>
         )}
       </div>

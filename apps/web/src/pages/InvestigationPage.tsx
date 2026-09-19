@@ -1,12 +1,20 @@
 import { useCallback, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertTriangle, GitCommitHorizontal, RefreshCw } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  GitBranch,
+  GitCommitHorizontal,
+  GitPullRequest,
+  RefreshCw,
+} from 'lucide-react';
 import { Button, Mono, Panel, Skeleton } from '@/components/primitives';
 import { SeverityBadge, StatusBadge } from '@/components/status';
 import { ActivityRail } from '@/features/investigation/Activity';
 import { ApprovalPanel } from '@/features/investigation/Approval';
 import { BlastRadius } from '@/features/investigation/BlastRadius';
 import { EvidencePanel } from '@/features/investigation/Evidence';
+import { LifecycleTimeline } from '@/features/investigation/LifecycleTimeline';
 import { ProvenanceBar } from '@/features/investigation/ProvenanceBar';
 import { InvestigationTerminal } from '@/features/investigation/Terminal';
 import { useInvestigation } from '@/hooks/useInvestigation';
@@ -63,69 +71,120 @@ export function InvestigationPage({ session }: { session: Session }) {
   const finding = state.findings[0];
   const provenance = investigation?.modelProvenance ?? null;
 
+  // The resolved PR URL comes from the action record.
+  const resolvedPrUrl = state.action?.resultUrl ?? null;
+  const isResolved = state.status === 'RESOLVED';
+  const isFailed = state.status === 'FAILED';
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
+
+      {/* ── Top header: reference, repo, commit, badges ─────────────────── */}
       <header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
         <div className="flex items-center gap-2.5">
           <Mono className="rounded bg-[--color-surface-raised] px-2 py-1 text-[0.72rem] font-semibold text-[--color-ink]">
             {investigation?.reference}
           </Mono>
-          <span className="text-sm text-[--color-ink-muted]">
+          <span className="text-sm font-medium text-[--color-ink-muted]">
             {investigation?.change.repositoryFullName}
-            {investigation?.change.pullRequestNumber
-              ? ` · PR #${investigation.change.pullRequestNumber}`
-              : ''}
           </span>
+          {investigation?.change.pullRequestNumber ? (
+            <span className="flex items-center gap-1 text-xs text-[--color-ink-subtle]">
+              <GitPullRequest size={12} />
+              PR #{investigation.change.pullRequestNumber}
+            </span>
+          ) : null}
+          {investigation?.change.branch ? (
+            <span className="flex items-center gap-1 text-xs text-[--color-ink-subtle]">
+              <GitBranch size={12} />
+              <Mono>{investigation.change.branch}</Mono>
+            </span>
+          ) : null}
           <span className="flex items-center gap-1 text-xs text-[--color-ink-subtle]">
             <GitCommitHorizontal size={13} />
             <Mono>{investigation?.change.commitSha.slice(0, 8)}</Mono>
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {investigation?.startedAt ? (
+            <span className="hidden text-[0.68rem] text-[--color-ink-subtle] sm:block">
+              {formatTimeAgo(investigation.startedAt)}
+            </span>
+          ) : null}
           {investigation?.severity ? <SeverityBadge severity={investigation.severity} /> : null}
           {state.status ? <StatusBadge status={state.status} /> : null}
         </div>
       </header>
 
-      {/* The one-sentence answer, before any detail. */}
+      {/* ── Lifecycle timeline ────────────────────────────────────────────── */}
+      <Panel className="px-5 py-3.5">
+        <LifecycleTimeline status={state.status} />
+      </Panel>
+
+      {/* ── Resolved banner ───────────────────────────────────────────────── */}
+      {isResolved && resolvedPrUrl ? (
+        <a
+          href={resolvedPrUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex items-center gap-3 rounded-[--radius-panel] border border-[color-mix(in_oklch,var(--color-state-resolved)_40%,transparent)] bg-[color-mix(in_oklch,var(--color-state-resolved)_10%,transparent)] px-4 py-3 transition-colors hover:bg-[color-mix(in_oklch,var(--color-state-resolved)_15%,transparent)]"
+        >
+          <GitPullRequest size={16} className="shrink-0 text-[--color-state-resolved]" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[0.7rem] uppercase tracking-[0.08em] text-[--color-state-resolved]">
+              Remediation applied
+            </p>
+            <p className="mt-0.5 truncate text-sm font-medium text-[--color-ink]">
+              {resolvedPrUrl.replace('https://github.com/', '')}
+            </p>
+          </div>
+          <ArrowUpRight
+            size={15}
+            className="shrink-0 text-[--color-ink-subtle] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+          />
+        </a>
+      ) : null}
+
+      {/* ── Consequence panel ─────────────────────────────────────────────── */}
       <Panel className="overflow-hidden">
         <div className="px-5 py-4">
-        <p className="text-[0.68rem] uppercase tracking-[0.08em] text-[--color-ink-subtle]">
-          {investigation?.change.title}
-        </p>
-        <h1 className="mt-2 text-lg font-semibold leading-snug text-[--color-ink] sm:text-xl">
-          {investigation?.summary ??
-            (state.status === 'FAILED'
-              ? 'This investigation could not be completed.'
-              : 'Netra is investigating this change…')}
-        </h1>
-        {finding?.impact ? (
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[--color-ink-muted]">
-            {finding.impact}
+          <p className="text-[0.68rem] uppercase tracking-[0.08em] text-[--color-ink-subtle]">
+            {investigation?.change.title}
           </p>
-        ) : null}
+          <h1 className="mt-2 text-lg font-semibold leading-snug text-[--color-ink] sm:text-xl">
+            {investigation?.summary ??
+              (isFailed
+                ? 'This investigation could not be completed.'
+                : 'Netra is investigating this change…')}
+          </h1>
+          {finding?.impact ? (
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[--color-ink-muted]">
+              {finding.impact}
+            </p>
+          ) : null}
 
-        {state.status === 'FAILED' && state.failureReason ? (
-          <div className="mt-3 flex items-start gap-2 rounded-md border border-[color-mix(in_oklch,var(--color-state-severe)_40%,transparent)] bg-[color-mix(in_oklch,var(--color-state-severe)_10%,transparent)] px-3 py-2.5">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[--color-state-severe]" />
-            <div>
-              <p className="text-sm text-[--color-ink]">{state.failureReason}</p>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="mt-1.5 px-0"
-                onClick={() => void state.refresh()}
-              >
-                <RefreshCw size={12} />
-                Reload investigation
-              </Button>
+          {isFailed && state.failureReason ? (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-[color-mix(in_oklch,var(--color-state-severe)_40%,transparent)] bg-[color-mix(in_oklch,var(--color-state-severe)_10%,transparent)] px-3 py-2.5">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[--color-state-severe]" />
+              <div>
+                <p className="text-sm text-[--color-ink]">{state.failureReason}</p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mt-1.5 px-0"
+                  onClick={() => void state.refresh()}
+                >
+                  <RefreshCw size={12} />
+                  Reload investigation
+                </Button>
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
         </div>
         <ProvenanceBar provenance={provenance} />
       </Panel>
 
+      {/* ── Workspace grid: graph + terminal / activity + evidence ─────────── */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="grid min-h-0 grid-rows-[minmax(260px,1fr)_minmax(200px,0.85fr)] gap-3">
           <BlastRadius
@@ -148,6 +207,7 @@ export function InvestigationPage({ session }: { session: Session }) {
         </div>
       </div>
 
+      {/* ── Approval / decision panel ─────────────────────────────────────── */}
       <ApprovalPanel
         finding={finding}
         remediation={state.remediation}
@@ -164,6 +224,7 @@ function InvestigationSkeleton() {
   return (
     <div className="flex h-full flex-col gap-3">
       <Skeleton className="h-8 w-80" />
+      <Skeleton className="h-12 w-full" />
       <Skeleton className="h-28 w-full" />
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="grid min-h-0 grid-rows-2 gap-3">
@@ -174,4 +235,20 @@ function InvestigationSkeleton() {
       </div>
     </div>
   );
+}
+
+/** Returns a compact, human-readable relative time string. */
+function formatTimeAgo(isoString: string): string {
+  try {
+    const diff = Date.now() - new Date(isoString).getTime();
+    const minutes = Math.floor(diff / 60_000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  } catch {
+    return '';
+  }
 }

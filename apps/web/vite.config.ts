@@ -8,6 +8,10 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  define: {
+    // amazon-cognito-identity-js uses Node's `global` variable; polyfill it for the browser.
+    global: 'globalThis',
+  },
   server: { port: 5173 },
   test: { environment: 'jsdom', setupFiles: ['./src/test-setup.ts'] },
 });

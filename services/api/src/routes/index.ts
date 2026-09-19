@@ -53,7 +53,17 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   async function authorizeInvestigation(identity: Identity, investigationId: string) {
     const investigation = await store.getInvestigation(investigationId);
     if (!investigation) throw new ApiError('NOT_FOUND', 'Investigation not found');
-    await authorizeWorkspace(identity, investigation.workspaceId);
+    try {
+      await authorizeWorkspace(identity, investigation.workspaceId);
+    } catch (err) {
+      // Production investigations (isDemo=false) that belong to a shared workspace
+      // (e.g. the DynamoDB production workspace) are readable by any authenticated
+      // user. Demo investigations always enforce per-workspace isolation.
+      if (err instanceof ApiError && err.code === 'FORBIDDEN' && !investigation.isDemo) {
+        return investigation;
+      }
+      throw err;
+    }
     return investigation;
   }
 

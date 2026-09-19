@@ -5,6 +5,7 @@ import { loadConfig, type Config } from './config.js';
 import { registerRoutes } from './routes/index.js';
 import { EventBroker } from './runner/broker.js';
 import { InvestigationService } from './service/investigationService.js';
+import { DynamoStore } from './store/dynamo.js';
 import { MemoryStore } from './store/memory.js';
 import type { Store } from './store/types.js';
 
@@ -21,7 +22,11 @@ export interface BuildOptions {
  */
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
-  const store = options.store ?? new MemoryStore();
+  const store: Store =
+    options.store ??
+    (config.tableName
+      ? new DynamoStore(config.tableName, config.awsRegion)
+      : new MemoryStore());
   const broker = new EventBroker();
   const verifier = CompositeVerifier.create(config);
   const service = new InvestigationService(store, broker, config);

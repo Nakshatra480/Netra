@@ -2,8 +2,10 @@ import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   Activity,
+  Cloud,
   FolderGit2,
   LayoutDashboard,
+  MonitorDot,
   Search,
   Settings,
   ShieldHalf,
@@ -20,6 +22,8 @@ const NAV = [
 ];
 
 export function AppShell({ session, children }: { session: Session; children: ReactNode }) {
+  const isDemo = session.scheme === 'demo';
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-[--color-canvas]">
       <header className="flex h-12 shrink-0 items-center gap-4 border-b border-[--color-line] px-4">
@@ -27,18 +31,40 @@ export function AppShell({ session, children }: { session: Session; children: Re
           <ShieldHalf size={17} className="text-[--color-state-active]" />
           <span className="text-[0.95rem] font-semibold tracking-tight">Netra</span>
         </NavLink>
-        <span className="hidden text-xs text-[--color-ink-subtle] sm:block">
-          Demo workspace
-        </span>
+
+        {/* Backend mode indicator */}
+        <div
+          className={cn(
+            'hidden items-center gap-1.5 rounded-full border px-2.5 py-0.5 sm:flex',
+            isDemo
+              ? 'border-[color-mix(in_oklch,var(--color-state-active)_30%,transparent)] bg-[color-mix(in_oklch,var(--color-state-active)_10%,transparent)]'
+              : 'border-[color-mix(in_oklch,var(--color-state-resolved)_35%,transparent)] bg-[color-mix(in_oklch,var(--color-state-resolved)_10%,transparent)]',
+          )}
+        >
+          {isDemo ? (
+            <MonitorDot size={10} className="text-[--color-state-active]" />
+          ) : (
+            <Cloud size={10} className="text-[--color-state-resolved]" />
+          )}
+          <span
+            className={cn(
+              'text-[0.62rem] font-semibold uppercase tracking-[0.07em]',
+              isDemo ? 'text-[--color-state-active]' : 'text-[--color-state-resolved]',
+            )}
+          >
+            {isDemo ? 'Demo' : 'AWS Production'}
+          </span>
+        </div>
+
         <div className="ml-auto flex items-center gap-3">
           <span className="mono hidden text-[0.68rem] text-[--color-ink-subtle] md:block">
-            {session.scheme === 'demo' ? 'Demo session' : 'Signed in'}
+            {isDemo ? 'Demo session' : 'Signed in'}
           </span>
           <div
             className="grid h-7 w-7 place-items-center rounded-full bg-[--color-surface-raised] text-[0.7rem] font-semibold text-[--color-ink-muted]"
             aria-hidden="true"
           >
-            {session.scheme === 'demo' ? 'D' : 'U'}
+            {isDemo ? 'D' : 'U'}
           </div>
         </div>
       </header>
