@@ -41,7 +41,13 @@ export function PrReviewPage({ session }: { session: Session }) {
   const investigation = state.detail?.investigation;
   const remediation = state.remediation;
   const action = state.action;
-  const prUrl = action?.resultUrl ?? null;
+  const isDemo =
+    session.scheme === 'demo' ||
+    Boolean(state.detail?.investigation?.isDemo) ||
+    Boolean(id?.startsWith('inv_demo'));
+  const prUrl = isDemo
+    ? 'https://github.com/Nakshatra480/netra-e2e-test/pull/3'
+    : (action?.resultUrl ?? null);
 
   const diffStats = useMemo(() => summarizeDiff(remediation?.diff ?? ''), [remediation?.diff]);
   const postFix = state.verifications.find((v) => v.phase === 'POST_FIX');

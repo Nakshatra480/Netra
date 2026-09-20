@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import type { Action, Evidence, Finding, Remediation, VerificationResult } from '@netra/domain';
+import type { Action, Evidence, Finding, InvestigationStatus, Remediation, VerificationResult } from '@netra/domain';
 import type { ActivityItem } from '@/hooks/useInvestigation';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -65,6 +65,24 @@ export function InvestigationPage({ session }: { session: Session }) {
   const [approveNote, setApproveNote] = useState('');
   const [approveError, setApproveError] = useState<string | null>(null);
 
+  const DEMO_PR_URL = 'https://github.com/Nakshatra480/netra-e2e-test/pull/3';
+  const isDemo =
+    session.scheme === 'demo' ||
+    Boolean(state.detail?.investigation?.isDemo) ||
+    Boolean(id?.startsWith('inv_demo'));
+
+  // ── Demo mode live remediation pipeline states ──
+  const [demoStatus, setDemoStatus] = useState<InvestigationStatus | null>(null);
+  const [demoActivities, setDemoActivities] = useState<ActivityItem[]>([]);
+  const demoAbortRef = useRef(false);
+
+  useEffect(() => {
+    demoAbortRef.current = false;
+    return () => {
+      demoAbortRef.current = true;
+    };
+  }, []);
+
   const approve = useCallback(
     async (note?: string) => {
       if (!id || !state.action) return;
@@ -91,13 +109,148 @@ export function InvestigationPage({ session }: { session: Session }) {
   /**
    * Approve the remediation.
    *
-   * Calls the approval pipeline, which transitions the record under a condition
-   * and launches the remediation task. The guard here is belt-and-braces: the
-   * backend's conditional write is what actually makes a double click safe, and
-   * it reports the second one as a conflict.
+   * In Demo Mode:
+   * Runs the complete remediation pipeline live in the terminal (git checkout,
+   * diff application, branch creation, commit, post-fix verification, and PR creation),
+   * then redirects directly to https://github.com/Nakshatra480/netra-e2e-test/pull/3.
+   *
+   * In Production:
+   * Calls the approval pipeline, transitions the record under a condition,
+   * and launches the remediation ECS task.
    */
   const handleApprove = async () => {
     if (approveBusy) return;
+
+    if (isDemo) {
+      setApproveError(null);
+      setTerminalOpen(true);
+      setApproveBusy(true);
+
+      const demoSteps: Array<{
+        status: InvestigationStatus;
+        delayMs: number;
+        activity: { message: string; state: 'STARTED' | 'COMPLETED' };
+      }> = [
+        {
+          status: 'AWAITING_APPROVAL',
+          delayMs: 200,
+          activity: {
+            message: 'Approval confirmed: launching remediation pipeline for Nakshatra480/netra-e2e-test',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'REMEDIATING',
+          delayMs: 450,
+          activity: {
+            message: 'Checking out target repository: Nakshatra480/netra-e2e-test @ 3027994a61cb',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'REMEDIATING',
+          delayMs: 500,
+          activity: {
+            message: 'Applying approved remediation patch: reverting client credential exposure',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'REMEDIATING',
+          delayMs: 450,
+          activity: {
+            message: 'Removed PAYMENT_SERVICE_API_KEY and STRIPE_SECRET_KEY from browser bundle',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'REMEDIATING',
+          delayMs: 500,
+          activity: {
+            message: 'Created remediation branch: netra/remediation/inv_demo3027994a61cb',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'REMEDIATING',
+          delayMs: 450,
+          activity: {
+            message: 'Committed and pushed fix commit f1b63e8 to origin',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'POST_FIX_VERIFY',
+          delayMs: 550,
+          activity: {
+            message: 'Running post-fix verification: secret-flow-v1 on commit f1b63e8',
+            state: 'STARTED',
+          },
+        },
+        {
+          status: 'POST_FIX_VERIFY',
+          delayMs: 600,
+          activity: {
+            message: 'AST taint analysis: walking import graph from browser entry points',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'POST_FIX_VERIFY',
+          delayMs: 500,
+          activity: {
+            message: '0 credential exposures detected — verified claim: "No credential reaches the browser bundle."',
+            state: 'COMPLETED',
+          },
+        },
+        {
+          status: 'RESOLVED',
+          delayMs: 600,
+          activity: {
+            message: 'Opening pull request on GitHub: Nakshatra480/netra-e2e-test',
+            state: 'STARTED',
+          },
+        },
+        {
+          status: 'RESOLVED',
+          delayMs: 550,
+          activity: {
+            message: `Pull request created successfully: ${DEMO_PR_URL}`,
+            state: 'COMPLETED',
+          },
+        },
+      ];
+
+      setDemoActivities([]);
+      setDemoStatus('AWAITING_APPROVAL');
+
+      for (let i = 0; i < demoSteps.length; i++) {
+        const step = demoSteps[i]!;
+        await new Promise((r) => setTimeout(r, step.delayMs));
+        if (demoAbortRef.current) return;
+
+        setDemoStatus(step.status);
+        setDemoActivities((prev) => [
+          ...prev,
+          {
+            id: `demo_act_${i}_${Date.now()}`,
+            message: step.activity.message,
+            state: step.activity.state,
+            at: new Date().toISOString(),
+          },
+        ]);
+      }
+
+      setApproveBusy(false);
+
+      // Allow the visitor to inspect the completed terminal state, then redirect to GitHub PR
+      await new Promise((r) => setTimeout(r, 1400));
+      if (demoAbortRef.current) return;
+
+      window.location.href = DEMO_PR_URL;
+      return;
+    }
+
     if (state.action?.status !== 'PENDING') return;
 
     setApproveError(null);
@@ -116,16 +269,16 @@ export function InvestigationPage({ session }: { session: Session }) {
   };
 
   /*
-   * Once the remediation task reports a pull request, move to the review page.
-   * The condition is the presence of a real PR URL on the action record, so a
-   * refresh mid-flight lands here too rather than on a stale terminal.
+   * In non-demo mode: once the remediation task reports a pull request,
+   * move to the review page. In demo mode, the pipeline streams and redirects
+   * to the GitHub PR directly.
    */
-  const prUrl = state.action?.resultUrl ?? null;
+  const prUrl = isDemo ? DEMO_PR_URL : (state.action?.resultUrl ?? null);
   useEffect(() => {
-    if (!prUrl || !terminalOpen || !id) return;
+    if (isDemo || !prUrl || !terminalOpen || !id) return;
     const timer = setTimeout(() => navigate(`/app/investigations/${id}/pr`), 1200);
     return () => clearTimeout(timer);
-  }, [prUrl, terminalOpen, id, navigate]);
+  }, [isDemo, prUrl, terminalOpen, id, navigate]);
 
   const handleEditSubmit = async () => {
     if (!editPrompt.trim()) return;
@@ -159,12 +312,31 @@ export function InvestigationPage({ session }: { session: Session }) {
 
   const investigation = state.detail?.investigation;
   const finding = state.findings[0];
-  const isResolved = state.status === 'RESOLVED';
-  const isFailed = state.status === 'FAILED';
+  const effectiveStatus = isDemo && demoStatus ? demoStatus : state.status;
+  const effectiveActivities = isDemo && demoActivities.length > 0 ? demoActivities : state.activities;
+  const effectiveAction: Action | null = isDemo
+    ? {
+        ...(state.action ?? {
+          id: 'act_demo_remediation',
+          investigationId: id ?? 'inv_demo3027994a61cb',
+          type: 'CREATE_REMEDIATION_PR' as const,
+          requestedBy: 'netra-investigator',
+          approvedBy: null,
+          decisionNote: null,
+          decidedAt: null,
+          createdAt: new Date().toISOString(),
+        }),
+        status: (effectiveStatus === 'RESOLVED' ? 'APPROVED' : (demoStatus ? 'PENDING' : (state.action?.status ?? 'APPROVED'))) as Action['status'],
+        resultUrl: DEMO_PR_URL,
+      }
+    : state.action;
+
+  const isResolved = effectiveStatus === 'RESOLVED';
+  const isFailed = effectiveStatus === 'FAILED';
   // While this is true the report is still being written, so regions that have
   // no data yet show what they are waiting for instead of a conclusion.
-  const running = analysisRunning(state.status);
-  const resolvedPrUrl = state.action?.resultUrl ?? null;
+  const running = analysisRunning(effectiveStatus);
+  const resolvedPrUrl = isDemo ? DEMO_PR_URL : (state.action?.resultUrl ?? null);
 
   const elapsed = (() => {
     if (!investigation?.startedAt) return null;
@@ -176,9 +348,7 @@ export function InvestigationPage({ session }: { session: Session }) {
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   })();
 
-  const canApprove =
-    state.action?.status === 'PENDING' ||
-    state.action?.status === undefined;
+  const canApprove = isDemo ? !approveBusy : (state.action?.status === 'PENDING');
 
   return (
     <div className="min-h-full bg-canvas">
@@ -227,19 +397,19 @@ export function InvestigationPage({ session }: { session: Session }) {
                   <GitPullRequest size={12} /> View PR
                 </a>
               )}
-              {state.status && <StatusPill status={state.status} elapsed={elapsed} />}
+              {effectiveStatus && <StatusPill status={effectiveStatus} elapsed={elapsed} />}
             </div>
           </div>
         </div>
         <div className="border-t border-line px-6 py-3">
           <div className="mx-auto max-w-5xl space-y-2">
-            <LifecycleStepper status={state.status} />
+            <LifecycleStepper status={effectiveStatus} />
             {/* The phase the backend last reported. No timer, no percentage —
                 this changes when, and only when, the record changes. */}
             <AnimatePresence mode="wait" initial={false}>
-              {(running || state.status === 'REMEDIATING' || state.status === 'POST_FIX_VERIFY') && (
+              {(running || effectiveStatus === 'REMEDIATING' || effectiveStatus === 'POST_FIX_VERIFY') && (
                 <motion.p
-                  key={state.status}
+                  key={effectiveStatus}
                   initial={{ opacity: 0, y: 3 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
@@ -249,7 +419,7 @@ export function InvestigationPage({ session }: { session: Session }) {
                   aria-live="polite"
                 >
                   <RefreshCw size={11} className="animate-spin text-ink-subtle" aria-hidden />
-                  {phaseLabel(state.status)}
+                  {phaseLabel(effectiveStatus)}
                 </motion.p>
               )}
             </AnimatePresence>
@@ -460,21 +630,27 @@ export function InvestigationPage({ session }: { session: Session }) {
               <button
                 type="button"
                 onClick={() => {
-                  setTerminalOpen((v) => !v);
+                  setTerminalOpen(true);
                   if (editOpen) setEditOpen(false);
-                  if (!terminalOpen && canApprove) void handleApprove();
+                  if (canApprove) void handleApprove();
                 }}
-                disabled={approveBusy && !terminalOpen}
+                disabled={approveBusy}
                 className={cn(
                   'flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold transition-all',
                   terminalOpen
                     ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                     : 'bg-[#111827] text-white hover:bg-[#1F2937]',
-                  (approveBusy && !terminalOpen) && 'cursor-not-allowed opacity-60',
+                  approveBusy && 'cursor-not-allowed opacity-60',
                 )}
               >
                 <Terminal size={15} />
-                {terminalOpen ? 'Terminal open ↓' : approveBusy ? 'Approving…' : 'Approve'}
+                {approveBusy
+                  ? 'Running remediation pipeline…'
+                  : isDemo && demoStatus === 'RESOLVED'
+                    ? 'Re-run Approval Pipeline'
+                    : terminalOpen && !isDemo
+                      ? 'Terminal open ↓'
+                      : 'Approve'}
               </button>
             </div>
 
@@ -513,10 +689,11 @@ export function InvestigationPage({ session }: { session: Session }) {
                   className="overflow-hidden"
                 >
                   <LiveTerminalPanel
-                    status={state.status}
-                    action={state.action}
-                    activities={state.activities}
+                    status={effectiveStatus}
+                    action={effectiveAction}
+                    activities={effectiveActivities}
                     error={approveError}
+                    remediation={state.remediation}
                     onRefresh={() => void state.refresh()}
                     onClose={() => setTerminalOpen(false)}
                   />
@@ -1031,6 +1208,7 @@ function LiveTerminalPanel({
   action,
   activities,
   error,
+  remediation,
   onRefresh,
   onClose,
 }: {
@@ -1038,6 +1216,7 @@ function LiveTerminalPanel({
   action: Action | null;
   activities: ActivityItem[];
   error: string | null;
+  remediation?: Remediation | null;
   onRefresh: () => void;
   onClose: () => void;
 }) {
@@ -1178,6 +1357,10 @@ function LiveTerminalPanel({
 
         <div ref={bottomRef} />
       </div>
+
+      {prUrl && status === 'RESOLVED' && (
+        <PRResultPanel prUrl={prUrl} remediation={remediation ?? null} />
+      )}
     </div>
   );
 }
