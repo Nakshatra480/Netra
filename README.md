@@ -4,207 +4,177 @@
 
 > LLMs investigate. Deterministic code verifies. Humans authorize.
 
-A diff can be five lines and still publish a credential. Code review asks *is this correct?*; scanners ask *does this contain a known vulnerability?* Netra asks a different question:
+A diff can be five lines and still publish a credential. Code review asks *is this correct?* Scanners ask *does this contain a known vulnerability?* Netra asks a different question:
 
-> **What can this change affect, and can we prove the consequence?**
+> **What can this change reach, and can we prove it?**
+
+Built for the **AWS First Commit Hackathon** · Region `eu-north-1` · Deployed with AWS SAM.
 
 **🔗 Live demo → [netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com](http://netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com)**
 
 ---
 
-## The loop
+## What it does
 
-```
-GitHub push → webhook → EventBridge → Step Functions
-  → Fargate investigator → isolated sandbox → controlled tools
-  → evidence chain → blast-radius graph → deterministic verification
-  → AWAITING_APPROVAL → human approval via UI
-  → remediation PR on GitHub → post-fix verification → RESOLVED
-```
+A push to a monitored repository starts a real investigation. Netra clones the commit into an isolated sandbox, traces what the change can reach, and records evidence for every claim. When it proves an exposure, it stops and asks a human. Only after approval does it open a pull request — and only after re-running the same check against the fixed commit does it mark the investigation resolved.
 
-Netra is built around making that one loop work end to end, rather than around a long list of partially-implemented scanners.
+Nothing is simulated. Where a capability is unavailable, the UI says so rather than pretending it ran.
 
 ---
 
-## Production status
+## AWS architecture
 
-Everything below runs on AWS. Click "Try the live demo" on the landing page to see a real CRITICAL investigation with evidence, blast-radius graph, and remediation PR.
+```mermaid
+flowchart TD
+    GH["GitHub App<br/>push / pull_request"]
 
-| Capability | State |
+    subgraph Ingest["Ingest"]
+        APIGW1["API Gateway HTTP API<br/>webhook endpoint"]
+        WH["Lambda<br/>github-webhook<br/>HMAC verify"]
+        DDB1[("DynamoDB<br/>deliveries<br/>idempotency")]
+        EB["EventBridge<br/>Netra.CodeChange<br/>+ archive"]
+        DLQ["SQS<br/>dead-letter"]
+    end
+
+    subgraph Orchestrate["Orchestrate"]
+        SFN["Step Functions<br/>investigation workflow"]
+        L1["Lambda<br/>create-investigation"]
+        L2["Lambda<br/>confirm-outcome"]
+        L3["Lambda<br/>record-failure"]
+    end
+
+    subgraph Analyze["Analyze"]
+        ECS["ECS Fargate task<br/>investigator<br/>sandboxed, allowlisted tools"]
+        ECR["ECR<br/>investigator image"]
+        SM["Secrets Manager<br/>GitHub App key"]
+    end
+
+    DDB2[("DynamoDB<br/>investigations<br/>META · FINDING# · EVIDENCE#<br/>VERIFY# · GRAPH · ACTION")]
+
+    subgraph Serve["Serve"]
+        APIGW2["API Gateway HTTP API<br/>read API"]
+        API["Lambda<br/>api (Fastify)"]
+        COG["Cognito<br/>Google sign-in"]
+        S3["S3<br/>React SPA"]
+    end
+
+    subgraph Remediate["Remediate — human gated"]
+        APIGW3["API Gateway HTTP API<br/>approval + Cognito JWT authorizer"]
+        APPROVE["Lambda<br/>approve-investigation"]
+        ECS2["ECS Fargate task<br/>remediate"]
+        PR["GitHub pull request"]
+    end
+
+    CW["CloudWatch<br/>logs · alarms"]
+
+    GH -->|"HMAC-signed delivery"| APIGW1 --> WH
+    WH --> DDB1
+    WH -->|"PutEvents"| EB
+    EB -.->|"on failure"| DLQ
+    EB -->|"rule"| SFN
+    SFN --> L1 --> DDB2
+    SFN --> ECS
+    ECR -.->|"image pull"| ECS
+    SM -.->|"injected by ECS agent"| ECS
+    ECS -->|"status · events · evidence"| DDB2
+    ECS -->|"clone @ commit"| GH
+    SFN --> L2 --> DDB2
+    SFN -.->|"timeout / error"| L3 --> DDB2
+
+    DDB2 --> API
+    APIGW2 --> API
+    S3 --> APIGW2
+    COG -.->|"ID / access token"| S3
+
+    S3 -->|"Approve"| APIGW3 --> APPROVE
+    COG -.->|"verifies JWT"| APIGW3
+    APPROVE -->|"guarded state transition"| DDB2
+    APPROVE -->|"RunTask"| ECS2
+    ECS2 -->|"opens"| PR
+    ECS2 -->|"POST_FIX verification"| DDB2
+
+    WH -.-> CW
+    ECS -.-> CW
+    SFN -.-> CW
+```
+
+### AWS services used
+
+| Service | Role in Netra |
 |---|---|
-| Investigation domain model and lifecycle | ✅ production |
-| Isolated Docker sandbox with command allowlist | ✅ production (ECS Fargate) |
-| Controlled investigation tools | ✅ production |
-| Deterministic credential-exposure analyzer | ✅ production |
-| Evidence chain and verification records | ✅ production (DynamoDB) |
-| Blast-radius graph | ✅ production (DynamoDB + React Flow) |
-| Live terminal event streaming (SSE) | ✅ production |
-| Human approval boundary | ✅ production (API Gateway + Lambda) |
-| Remediation PR creation via GitHub App | ✅ production |
-| Post-fix verification | ✅ production |
-| GitHub App + webhook pipeline | ✅ production (`Nakshatra480/Netra`) |
-| AWS SAM deployment (API GW + Lambda + DynamoDB + ECS + Step Functions) | ✅ production (eu-north-1) |
-| Demo mode with real production data | ✅ working |
-| Provider-agnostic model router (OpenRouter → Ollama → deterministic) | ✅ implemented |
-| Amazon Cognito authentication | ✅ implemented; pool not seeded for hackathon |
+| **API Gateway** (HTTP API) | Three endpoints: GitHub webhook receiver, investigation read API, and the approval API — the last protected by a **Cognito JWT authorizer** |
+| **AWS Lambda** | Webhook receiver, three workflow steps (create / confirm / record-failure), the approval handler, and the Fastify read API |
+| **Amazon EventBridge** | `Netra.CodeChange` custom bus decoupling ingest from analysis, with an **event archive** for replay |
+| **AWS Step Functions** | The investigation workflow: create → run → confirm → approval branch, with retries, a 30-minute task timeout, and a catch-all failure path |
+| **Amazon ECS on Fargate** | Runs the investigator as an ephemeral, unprivileged container — the sandbox boundary for cloning and analyzing untrusted code |
+| **Amazon ECR** | Hosts the ARM64 investigator image (Graviton) |
+| **Amazon DynamoDB** | Two tables: webhook **delivery idempotency** (conditional writes), and a single-table investigation store (`pk=INV#<id>`) |
+| **Amazon S3** | Static hosting for the React single-page app |
+| **Amazon Cognito** | Google-federated sign-in; the `sub` claim is the only accepted approver identity |
+| **AWS Secrets Manager** | GitHub App private key, webhook secret, model API keys — never in source, logs, or the frontend bundle |
+| **Amazon SQS** | Dead-letter queue for events the pipeline could not accept |
+| **Amazon CloudWatch** | Structured logs for every component, plus an alarm on webhook errors |
+| **AWS SAM / CloudFormation** | The whole stack as IaC in `infra/template.yaml` |
+| **AWS IAM** | Scoped task, execution, Lambda, Step Functions and EventBridge roles |
 
-Nothing is simulated. Where something is unavailable, the UI says so rather than pretending it ran.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    GitHub Repository                     │
-│                  Nakshatra480/Netra                      │
-└───────────────────┬─────────────────────────────────────┘
-                    │ push webhook
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│              AWS API Gateway (webhook)                   │
-│         netra-prod-github-webhook Lambda                 │
-└───────────────────┬─────────────────────────────────────┘
-                    │ EventBridge event
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│           Step Functions State Machine                   │
-│  CreateInvestigation → RunInvestigation (ECS Fargate)   │
-│  → ConfirmOutcome → ReachedApproval?                    │
-│      ├─ AWAITING_APPROVAL → waits for human decision    │
-│      └─ NoFindingToApprove → succeed                    │
-└───────────────────┬─────────────────────────────────────┘
-                    │
-          ┌─────────┴──────────┐
-          ▼                    ▼
-┌──────────────────┐  ┌────────────────────────────────┐
-│  ECS Fargate     │  │  DynamoDB (netra-prod-          │
-│  investigator    │  │   investigations)               │
-│  - clones repo   │  │  pk=INV#{id}                   │
-│  - runs pipeline │  │  sk=META|FINDING#|EVIDENCE#|   │
-│  - sandbox tools │  │     VERIFY#|GRAPH|ACTION#      │
-│  - writes to DB  │  └────────────────────────────────┘
-└──────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│     API Lambda (netra-prod-api) — Fastify + SSE         │
-│  GET /api/investigations/:id                            │
-│  POST /api/investigations/:id/approve                   │
-│  POST /api/demo/session                                 │
-└───────────────────┬─────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────────┐
-│     React SPA (S3 static hosting)                       │
-│  - Investigation workspace (blast radius, evidence,     │
-│    terminal, approval panel)                            │
-│  - Real-time SSE updates while investigating            │
-└─────────────────────────────────────────────────────────┘
-```
+> **No Amazon Bedrock.** Model calls go through a provider-agnostic router (OpenRouter, with a local Ollama fallback). When no model is reachable, the pipeline runs deterministic-only and labels the report accordingly — the security conclusion never depends on an LLM.
 
 ---
 
-## Running the demo
+## The trust model
 
-1. Visit the [live URL](http://netra-prod-web-421946397122.s3-website.eu-north-1.amazonaws.com)
-2. Click **Try the live demo** — no account needed
-3. The hero investigation (`inv_fixture1789797123credexp`) shows a **CRITICAL** credential-exposure finding:
-   - `vite.config.js` bundled `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` into the browser bundle
-   - 18 evidence items trace the secret from env → config → bundler → browser
-   - 9-node blast radius graph shows the full exposure path
-   - Deterministic verifier confirms the exposure
-   - Remediation PR link shows what Netra proposed
-4. Use the approval panel to see the human decision boundary
+The pipeline is arranged so that the three roles cannot be confused:
 
----
-
-## Triggering a real investigation
-
-Any push to `Nakshatra480/Netra` fires the pipeline:
-
-```bash
-# The GitHub App is installed on Nakshatra480/Netra.
-# Any push triggers the webhook → Step Functions → Fargate investigator.
-git push origin <branch>
-```
-
-The investigation appears in the Investigations list within ~30 seconds.
-
----
-
-## Local development
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start the web app (hot reload)
-cd apps/web && pnpm dev
-
-# Start the API (local DynamoDB or AWS credentials required)
-cd services/api && pnpm dev
-
-# Run tests
-pnpm test
-```
-
-### Environment variables
-
-| Variable | Where | Purpose |
+| Role | Who does it | Enforcement |
 |---|---|---|
-| `VITE_API_BASE_URL` | web build | API Gateway URL |
-| `NETRA_TABLE_NAME` | API Lambda | DynamoDB table |
-| `NETRA_ALLOWED_ORIGINS` | API Lambda | CORS origins |
-| `NETRA_DEMO_SESSION_SECRET` | API Lambda | Stable HMAC key for demo tokens |
-| `NETRA_GITHUB_APP_SECRET` | ECS task (Secrets Manager) | GitHub App PEM + App ID |
-| `NETRA_OPENROUTER_API_KEY` | ECS task (Secrets Manager) | Optional LLM provider |
+| **Investigate** | The LLM proposes hypotheses and narrative | Can only call allowlisted tools; may never set a verification status |
+| **Verify** | Deterministic analyzers (`secret-flow-v1`) | Only code can write `VERIFIED`; every finding cites a file, a line and the check that proved it |
+| **Authorize** | A signed-in human | No transition reaches `REMEDIATING` except through `AWAITING_APPROVAL`; approver identity comes from the Cognito JWT `sub`, never the request body |
+
+`RESOLVED` is never granted because a patch applied cleanly. The same analyzer re-runs against the new commit, and the `POST_FIX` verification record is written *before* the status — so no reader can see `RESOLVED` without the evidence behind it.
 
 ---
 
-## Project structure
+## Repository layout
 
 ```
-Netra/
-├── apps/
-│   └── web/                   # React SPA (Vite + TypeScript)
-├── packages/
-│   └── domain/                # Shared TypeScript types
-├── services/
-│   ├── api/                   # Fastify API (Lambda handler)
-│   ├── investigator/          # Python investigation pipeline (Fargate)
-│   ├── orchestrator/          # Node.js orchestration Lambdas
-│   ├── sandbox/               # Docker sandbox for tool execution
-│   └── webhook/               # GitHub webhook receiver
-├── infra/
-│   └── template.yaml          # AWS SAM template
-└── demo/
-    └── vulnerable-repo/       # Fixture for credential-exposure demo
+apps/web                 React + TypeScript + Tailwind SPA
+services/api             Fastify read API (Lambda)
+services/webhook         GitHub webhook receiver (Lambda)
+services/orchestrator    Step Functions task handlers + approval (Lambda)
+services/investigator    Python analysis engine (ECS Fargate)
+packages/domain          Shared typed domain model
+infra/                   AWS SAM template + state machine definition
 ```
 
 ---
 
-## Trust model
+## Running it
 
-Netra's design is opinionated about where each kind of decision is made:
+```bash
+pnpm install
+pnpm typecheck && pnpm test                    # TypeScript services
+cd services/investigator && uv sync && uv run pytest    # analysis engine
+pnpm --filter @netra/web dev                   # UI against a local API
+```
 
-| Decision | Who makes it |
-|---|---|
-| What to investigate | Deterministic (webhook payload) |
-| What commands to run | Controlled tool set (allowlist) |
-| Whether exposure is real | Deterministic analyzer |
-| What the evidence means | LLM (explains, doesn't decide) |
-| Whether the fix is correct | Deterministic post-fix verifier |
-| Whether to apply the fix | **Human** (required, not optional) |
+Deploy the stack:
 
-The LLM is a narrator, not a gatekeeper. It can be wrong. The deterministic code that wraps it cannot be fooled by a prompt.
+```bash
+sam deploy --config-env prod --template-file infra/template.yaml \
+  --parameter-overrides Stage=prod CognitoUserPoolId=<pool> CognitoClientId=<client> ...
+```
+
+Pre-created IAM roles are passed in as parameters because the deploying principal has `PowerUserAccess`, which cannot create roles. No secret is ever passed on the command line — production credentials live in Secrets Manager.
 
 ---
 
-## Hackathon
+## Current limitations
 
-Built for the **Ship It** hackathon. Category: **Best UI** + **Best Use of AI Agents**.
+Stated plainly, because a security tool that overstates itself is worse than one that does less:
 
-- Real AWS deployment, real GitHub App, real pipeline
-- Every finding is proven by deterministic code, not just reported by an LLM
-- Human approval is a hard boundary — the LLM cannot approve its own finding
+- **One analyzer.** `secret-flow-v1` proves credential exposure and sensitive secret flow. The fixture repository also contains authorization, dangerous-input and security-config examples; no analyzer reports those yet, and Netra does not pretend otherwise.
+- **One finding per investigation.** The pipeline currently surfaces the most severe exposure rather than a list.
+- **Live updates are polled, not pushed.** The UI re-reads the investigation record every 2.5s with backoff. Server-sent events work locally but are buffered by Lambda in production.
+- **Per-file change counts are recorded from the run onward.** Investigations analyzed before that was added show no file list.
+
