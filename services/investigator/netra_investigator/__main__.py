@@ -16,11 +16,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from .aws.github import AppCredentials
 from .config import InvestigatorConfig
 from .events import EventEmitter, ndjson_sink
 from .pipeline import InvestigationRequest, run_investigation
 from .remediate import apply_remediation, push_and_create_pr, verify_after_fix
-from .aws.github import AppCredentials, GitHubUnavailable
 
 
 def _configure_logging() -> None:
@@ -199,7 +199,7 @@ def _emit_result(payload: dict) -> None:
     sys.stdout.flush()
 
 
-def _remediate_from_env(config: InvestigatorConfig) -> int:
+def _remediate_from_env(config: InvestigatorConfig) -> int:  # noqa: ARG001
     """Fargate entrypoint for the remediation task.
 
     All inputs arrive as environment variables injected by the ECS agent and
@@ -210,9 +210,10 @@ def _remediate_from_env(config: InvestigatorConfig) -> int:
     The diff is passed via NETRA_REMEDIATION_DIFF (not a file) since there is
     no shared filesystem between the approving Lambda and this Fargate task.
 
-    Note: verify_after_fix (DockerSandbox) is intentionally skipped here because
-    Fargate containers cannot run Docker-in-Docker. The deterministic patch
-    application + PR creation is the verification boundary for this phase.
+    After the patch is applied and the PR is opened, the same deterministic
+    analyzer is re-run against the new commit inside a TaskSandbox (Fargate
+    cannot nest containers). Only a REFUTED post-fix verification resolves the
+    investigation.
     """
     import tempfile
 
@@ -247,13 +248,20 @@ def _remediate_from_env(config: InvestigatorConfig) -> int:
         Key={"pk": f"INV#{investigation_id}", "sk": "REMEDIATION"}
     ).get("Item", {})
     diff_content = _rem_item.get("diff", "")
+    # The finding this remediation answers — needed to attach the POST_FIX
+    # verification record to the same finding as the PRE_FIX one.
+    finding_id = str(_rem_item.get("findingId", "") or "").strip()
     if not diff_content:
         raise RuntimeError(f"No REMEDIATION.diff found in DynamoDB for {investigation_id}")
+    if not finding_id:
+        # Without it the post-fix verification cannot be attached to a finding,
+        # and an unattached verification cannot justify RESOLVED.
+        raise RuntimeError(f"No REMEDIATION.findingId found in DynamoDB for {investigation_id}")
     _log.info("diff loaded from DynamoDB: %d bytes", len(diff_content))
 
 
     # Clone the repository so we have a working tree to apply the patch to.
-    from .aws.github import AppCredentials, clone_repository, mint_app_jwt, installation_token
+    from .aws.github import AppCredentials, clone_repository, installation_token, mint_app_jwt
 
     repo_dir = tempfile.mkdtemp(prefix="netra-remediate-")
     repo_path = Path(repo_dir)
@@ -264,7 +272,11 @@ def _remediate_from_env(config: InvestigatorConfig) -> int:
             raise RuntimeError("NETRA_GITHUB_APP_SECRET is not set — cannot clone repository")
 
         credentials = AppCredentials.from_secret(github_secret)
-        token = installation_token(mint_app_jwt(credentials), installation_id or 0) if installation_id else None
+        token = (
+            installation_token(mint_app_jwt(credentials), installation_id)
+            if installation_id
+            else None
+        )
 
         if token:
             _log.info("cloning %s at %s", repository, head_sha[:12])
@@ -336,23 +348,92 @@ def _remediate_from_env(config: InvestigatorConfig) -> int:
             except Exception as exc:  # noqa: BLE001
                 _log.warning("PR creation failed (remediation applied locally): %s", exc)
 
-        # Persist result to DynamoDB (same pattern as aws/task.py).
-        # We skip DockerSandbox-based verify_after_fix here because Fargate
-        # containers cannot run Docker-in-Docker. The patch application itself
-        # IS the deterministic verification.
+        # ── Post-fix verification ────────────────────────────────────────
+        #
+        # A patch applying cleanly proves the diff was well-formed. It proves
+        # nothing about security. RESOLVED is only justified once the same
+        # deterministic analyzer has been re-run against the new commit and can
+        # no longer find the exposure.
+        #
+        # Fargate cannot nest containers, so the boundary is the task itself.
+        from .events import EventEmitter, collecting_sink
+        from .sandbox.executor import TaskSandbox
+
+        post_fix_sha = applied.commit_sha
+        verification: dict | None = None
+        verify_error: str | None = None
+
+        verify_events: list[dict] = []
+        emitter = EventEmitter(investigation_id, collecting_sink(verify_events))
+
+        try:
+            _log.info("running post-fix verification against %s", post_fix_sha[:12])
+            verification = verify_after_fix(
+                actual_repo,
+                emitter,
+                finding_id=finding_id,
+                base_sha=head_sha,
+                fixed_sha=post_fix_sha,
+                sandbox_factory=lambda path, _image, limits, checkout: TaskSandbox(
+                    path, limits=limits, checkout=checkout
+                ),
+            )
+            _log.info("post-fix verification: %s", verification["status"])
+        except Exception as exc:  # noqa: BLE001
+            # An error is not a pass. The investigation does not resolve.
+            verify_error = str(exc)[:500]
+            _log.error("post-fix verification errored: %s", verify_error)
+
+        # REFUTED means the analyzer can no longer find the finding. Anything
+        # else — still VERIFIED, inconclusive, or an error — is not a pass.
+        verified_clean = bool(verification) and verification["status"] == "REFUTED"
+
+        if verified_clean:
+            final_status = "RESOLVED"
+            failure_reason = None
+        elif verify_error:
+            final_status = "FAILED"
+            failure_reason = f"Post-fix verification could not run: {verify_error}"
+        else:
+            final_status = "FAILED"
+            failure_reason = (
+                "Post-fix verification still finds the issue after the fix "
+                f"({(verification or {}).get('status', 'no result')})."
+            )
+
         if table_name:
-            from .aws.store import InvestigationStore
             import boto3
+
+            from .aws.store import InvestigationStore
             store = InvestigationStore(table_name, region=region)
 
-            # Update META → RESOLVED (with PR URL in extra)
-            meta_extra: dict = {}
+            # Persist the verification before the status, so a reader can never
+            # see RESOLVED without the record that justifies it.
+            if verification:
+                store.put_verifications(investigation_id, [verification])
+                _log.info("POST_FIX verification persisted")
+
+            meta_extra: dict = {
+                "preFixSha": head_sha,
+                "postFixSha": post_fix_sha,
+                "postFixCheckId": (verification or {}).get("checkId"),
+                "postFixStatus": (verification or {}).get("status") or "ERROR",
+            }
             if pr_url:
                 meta_extra["prUrl"] = pr_url
                 meta_extra["prBranch"] = pr_branch
                 meta_extra["prCommitSha"] = pr_commit_sha
-            store.set_status(investigation_id, "RESOLVED", extra=meta_extra)
-            _log.info("investigation %s set to RESOLVED", investigation_id)
+
+            store.set_status(
+                investigation_id,
+                final_status,
+                failure_reason=failure_reason,
+                extra=meta_extra,
+            )
+            _log.info("investigation %s set to %s", investigation_id, final_status)
+
+            if verify_events:
+                store.put_events(investigation_id, verify_events)
 
             # Also write the PR URL to the ACTION record's resultUrl field so
             # the approval endpoint / UI can surface it directly.
@@ -371,15 +452,19 @@ def _remediate_from_env(config: InvestigatorConfig) -> int:
                 _log.info("ACTION resultUrl set to %s", pr_url)
 
         _emit_result({
-            "status": "RESOLVED",
+            "status": final_status,
             "branch": applied.branch,
             "commitSha": applied.commit_sha,
             "filesChanged": applied.files_changed,
             "prUrl": pr_url,
             "prBranch": pr_branch,
             "prCommitSha": pr_commit_sha,
+            "preFixSha": head_sha,
+            "postFixSha": post_fix_sha,
+            "postFixStatus": (verification or {}).get("status") or "ERROR",
+            "verifyError": verify_error,
         })
-        return 0
+        return 0 if verified_clean else 1
 
     except Exception as exc:  # noqa: BLE001
         _log.error("remediate-from-env failed: %s", exc)

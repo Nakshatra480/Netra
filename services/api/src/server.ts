@@ -66,7 +66,16 @@ async function main(): Promise<void> {
 }
 
 // Only start a server when run directly; importing the module must not listen.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop() ?? '')) {
+// AWS Lambda sets LAMBDA_TASK_ROOT in every execution environment, so we skip
+// the listen call there — the Lambda handler in lambda.ts drives request flow.
+if (
+  !process.env.LAMBDA_TASK_ROOT &&
+  process.argv[1] &&
+  // Guard: import.meta.url is undefined in CJS bundles (esbuild --format=cjs)
+  typeof import.meta !== 'undefined' &&
+  import.meta.url &&
+  import.meta.url.endsWith(process.argv[1].split('/').pop() ?? '')
+) {
   main().catch((error) => {
     console.error('Netra API failed to start:', error);
     process.exit(1);

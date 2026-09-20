@@ -9,8 +9,26 @@ import { z } from 'zod';
  * the API is started from several different working directories (the package
  * directory in development, the bundle root in Lambda), so they are resolved
  * against this rather than against `process.cwd()`.
+ *
+ * In ESM (local dev with tsx) import.meta.url is defined.
+ * In the CJS Lambda bundle (esbuild), import.meta.url is undefined so we fall
+ * back to process.cwd() which equals /var/task — the bundle root. Since
+ * Fargate handles all investigator execution, no relative monorepo paths are
+ * needed at runtime in Lambda.
  */
-export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+export const REPO_ROOT = (() => {
+  try {
+    // ESM path — works locally with tsx
+    const metaUrl = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : null;
+    if (metaUrl) {
+      return resolve(dirname(fileURLToPath(metaUrl)), '../../..');
+    }
+  } catch {
+    // fall through
+  }
+  // CJS/Lambda path — bundle is at /var/task
+  return process.cwd();
+})();
 
 function fromRepoRoot(path: string): string {
   return isAbsolute(path) ? path : resolve(REPO_ROOT, path);
@@ -61,6 +79,33 @@ const configSchema = z.object({
   maxModelTurns: z.string().optional(),
   maxInvestigationCostUsd: z.string().optional(),
 
+  /**
+   * The repository the Live Demo analyzes.
+   *
+   * Pinned server-side on purpose: the demo runs the real pipeline against a
+   * real repository, so the target must never come from the browser. A visitor
+   * cannot point the demo at someone else's code.
+   */
+  demoFixtureRepo: z.string().optional(),
+  /** Installation id of the Netra App on the fixture repository. */
+  demoFixtureInstallationId: z.string().optional(),
+  /**
+   * The exact commit the demo analyzes.
+   *
+   * Pinned rather than following HEAD because the analyzer is diff-scoped: it
+   * reports secrets a commit *introduces*. Following the branch tip would mean
+   * the demo silently stopped finding anything the moment an unrelated commit
+   * landed on the fixture. A pinned commit also makes the demo idempotent for
+   * good, since the investigation id is derived from it.
+   */
+  demoFixtureSha: z.string().optional(),
+  /**
+   * Cognito subject recorded as the fixture investigation's author, so the
+   * approval gate has a real owner. A demo visitor is never that owner, which
+   * is what keeps an anonymous click from opening a pull request.
+   */
+  demoFixtureOwnerSub: z.string().optional(),
+
   /** Signing key for demo sessions. Generated per process when unset. */
   demoSessionSecret: z.string().optional(),
   demoModeEnabled: z
@@ -72,10 +117,17 @@ const configSchema = z.object({
    * GitHub App credentials forwarded to the investigator subprocess.
    *
    * The value is the JSON payload stored in the `netra/{stage}/github/app`
-   * Secrets Manager secret: `{"appId": "…", "privateKey": "…"}`. It is never
-   * logged and never passed to any subprocess that does not need it.
+   * Secrets Manager secret: `{"appId": "…", "privateKey": "…", "clientSecret": "…"}`.
+   * It is never logged and never passed to any subprocess that does not need it.
    */
   githubAppSecret: z.string().optional(),
+
+  /**
+   * GitHub App OAuth client secret — extracted from githubAppSecret at runtime.
+   * Kept as a separate config field so routes can check availability clearly.
+   * Set by parsing the githubAppSecret JSON; never read from a separate env var.
+   */
+  githubClientSecret: z.string().optional(),
 
   /** Local development only: how the API runs the investigator. */
   investigatorPython: z
@@ -101,6 +153,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     artifactsBucket: env.NETRA_ARTIFACTS_BUCKET,
     eventBusName: env.NETRA_EVENT_BUS_NAME,
     stateMachineArn: env.NETRA_STATE_MACHINE_ARN,
+    demoFixtureRepo: env.NETRA_DEMO_FIXTURE_REPO,
+    demoFixtureInstallationId: env.NETRA_DEMO_FIXTURE_INSTALLATION_ID,
+    demoFixtureSha: env.NETRA_DEMO_FIXTURE_SHA,
+    demoFixtureOwnerSub: env.NETRA_DEMO_FIXTURE_OWNER_SUB,
     cognitoUserPoolId: env.NETRA_COGNITO_USER_POOL_ID,
     cognitoClientId: env.NETRA_COGNITO_CLIENT_ID,
     openrouterApiKeys: env.OPENROUTER_API_KEYS,
@@ -116,6 +172,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     investigatorCwd: env.NETRA_INVESTIGATOR_CWD,
     demoRepoBuilder: env.NETRA_DEMO_REPO_BUILDER,
     githubAppSecret: env.NETRA_GITHUB_APP_SECRET,
+    // Extract clientSecret from the app secret JSON so routes can check it directly.
+    githubClientSecret: (() => {
+      try {
+        const raw = env.NETRA_GITHUB_APP_SECRET;
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        return typeof parsed.clientSecret === 'string' ? parsed.clientSecret : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
   });
 
   if (!parsed.success) {

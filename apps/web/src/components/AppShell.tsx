@@ -1,101 +1,115 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import {
-  Activity,
-  Cloud,
-  FolderGit2,
-  LayoutDashboard,
-  MonitorDot,
-  Search,
-  Settings,
-  ShieldHalf,
-} from 'lucide-react';
+import { LayoutDashboard, LogOut, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { Session } from '@/lib/api';
+import { loadClaims } from '@/lib/session';
+import { signOut } from '@/lib/auth';
 
-const NAV = [
-  { to: '/app', label: 'Command Center', icon: LayoutDashboard, end: true },
-  { to: '/app/repositories', label: 'Repositories', icon: FolderGit2, end: false },
-  { to: '/app/investigations', label: 'Investigations', icon: Search, end: false },
-  { to: '/app/activity', label: 'Activity', icon: Activity, end: false },
-  { to: '/app/settings', label: 'Settings', icon: Settings, end: false },
-];
+/**
+ * The application shell.
+ *
+ * Deliberately thin. The product has one place you start (the dashboard) and
+ * one thing you read (an investigation), so a second navigation level would be
+ * inventing structure the product does not have. Everything else is reached
+ * from the content itself.
+ */
 
-export function AppShell({ session, children }: { session: Session; children: ReactNode }) {
+interface AppShellProps {
+  session: Session;
+  children: ReactNode;
+  onSignOut: () => void;
+}
+
+export function AppShell({ session, children, onSignOut }: AppShellProps) {
   const isDemo = session.scheme === 'demo';
+  const claims = isDemo ? null : loadClaims();
+
+  const displayName = claims?.name ?? claims?.email?.split('@')[0] ?? null;
+  const avatarInitial = isDemo ? 'D' : (displayName?.[0]?.toUpperCase() ?? 'N');
+  const avatarUrl = claims?.picture ?? null;
+
+  const handleSignOut = () => {
+    onSignOut();
+    if (!isDemo) signOut();
+  };
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[--color-canvas]">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-[--color-line] px-4">
-        <NavLink to="/" className="flex items-center gap-2">
-          <ShieldHalf size={17} className="text-[--color-state-active]" />
-          <span className="text-[0.95rem] font-semibold tracking-tight">Netra</span>
+    <div className="flex min-h-dvh flex-col bg-canvas">
+      <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-4 border-b border-line bg-surface px-4 sm:px-6">
+        <NavLink to="/app" className="flex select-none items-center gap-2.5">
+          <span className="grid h-7 w-7 place-items-center rounded-control bg-accent">
+            <ShieldCheck size={15} className="text-[#7C2D12]" strokeWidth={2.5} />
+          </span>
+          <span className="text-[1rem] font-bold tracking-tight text-ink">Netra</span>
         </NavLink>
 
-        {/* Backend mode indicator */}
-        <div
-          className={cn(
-            'hidden items-center gap-1.5 rounded-full border px-2.5 py-0.5 sm:flex',
-            isDemo
-              ? 'border-[color-mix(in_oklch,var(--color-state-active)_30%,transparent)] bg-[color-mix(in_oklch,var(--color-state-active)_10%,transparent)]'
-              : 'border-[color-mix(in_oklch,var(--color-state-resolved)_35%,transparent)] bg-[color-mix(in_oklch,var(--color-state-resolved)_10%,transparent)]',
-          )}
-        >
-          {isDemo ? (
-            <MonitorDot size={10} className="text-[--color-state-active]" />
-          ) : (
-            <Cloud size={10} className="text-[--color-state-resolved]" />
-          )}
-          <span
-            className={cn(
-              'text-[0.62rem] font-semibold uppercase tracking-[0.07em]',
-              isDemo ? 'text-[--color-state-active]' : 'text-[--color-state-resolved]',
-            )}
+        {/*
+         * One destination. Investigations are reached from the dashboard that
+         * lists them, so a link here would duplicate that path rather than add
+         * one.
+         */}
+        <nav aria-label="Main" className="ml-2 hidden sm:block">
+          <NavLink
+            to="/app"
+            end
+            className={({ isActive }) =>
+              cn(
+                'inline-flex items-center gap-2 rounded-control px-3 py-1.5 text-[0.875rem] transition-colors duration-150',
+                isActive
+                  ? 'bg-surface-sunken font-semibold text-ink'
+                  : 'text-ink-muted hover:bg-surface-raised hover:text-ink',
+              )
+            }
           >
-            {isDemo ? 'Demo' : 'AWS Production'}
-          </span>
-        </div>
+            <LayoutDashboard size={15} />
+            Dashboard
+          </NavLink>
+        </nav>
 
         <div className="ml-auto flex items-center gap-3">
-          <span className="mono hidden text-[0.68rem] text-[--color-ink-subtle] md:block">
-            {isDemo ? 'Demo session' : 'Signed in'}
-          </span>
-          <div
-            className="grid h-7 w-7 place-items-center rounded-full bg-[--color-surface-raised] text-[0.7rem] font-semibold text-[--color-ink-muted]"
-            aria-hidden="true"
-          >
-            {isDemo ? 'D' : 'U'}
+          {isDemo ? (
+            <span className="hidden items-center rounded-full border border-accent-border bg-accent-soft px-2.5 py-0.5 text-[0.6875rem] font-semibold uppercase tracking-wide text-[#9A3412] sm:inline-flex">
+              Demo mode
+            </span>
+          ) : null}
+
+          <div className="flex items-center gap-2">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                className="h-7 w-7 rounded-full border border-line object-cover"
+              />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="grid h-7 w-7 place-items-center rounded-full bg-surface-sunken text-[0.75rem] font-semibold text-ink-muted"
+              >
+                {avatarInitial}
+              </span>
+            )}
+            {displayName ? (
+              <span className="hidden max-w-[10rem] truncate text-[0.875rem] text-ink md:block">
+                {displayName}
+              </span>
+            ) : null}
           </div>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-[0.8125rem] text-ink-muted transition-colors duration-150 hover:bg-surface-raised hover:text-ink"
+          >
+            <LogOut size={14} />
+            <span className="hidden sm:inline">Sign out</span>
+          </button>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <nav
-          className="hidden w-52 shrink-0 flex-col gap-0.5 border-r border-[--color-line] p-2 lg:flex"
-          aria-label="Main"
-        >
-          {NAV.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors',
-                  isActive
-                    ? 'bg-[--color-surface-raised] font-medium text-[--color-ink]'
-                    : 'text-[--color-ink-muted] hover:bg-[--color-surface] hover:text-[--color-ink]',
-                )
-              }
-            >
-              <Icon size={15} />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-
-        <main className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">{children}</main>
-      </div>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
+        {children}
+      </main>
     </div>
   );
 }

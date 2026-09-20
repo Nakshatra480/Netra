@@ -26,7 +26,41 @@ export interface Store {
 
   createRepository(repository: Repository): Promise<Repository>;
   getRepository(id: string): Promise<Repository | null>;
+  /** Lookup by GitHub full name (owner/repo) — used by webhook routing. */
+  getRepositoryByFullName(fullName: string): Promise<Repository | null>;
   listRepositories(workspaceId: string): Promise<Repository[]>;
+
+  /**
+   * Persist the GitHub App installation associated with a Netra workspace.
+   * Called when the user completes the GitHub App install flow.
+   * Allows the server to list repos without requiring re-installation.
+   */
+  saveWorkspaceInstallation(workspaceId: string, installationId: number): Promise<void>;
+  /** Returns the GitHub installation ID linked to this workspace, or null if not connected. */
+  getWorkspaceInstallation(workspaceId: string): Promise<number | null>;
+
+  /**
+   * Persist a one-time OAuth state token bound to a Cognito userId.
+   * Token expires after ttlSeconds (default 600 = 10 minutes).
+   */
+  saveOAuthState(state: string, userId: string, ttlSeconds?: number): Promise<void>;
+  /** Returns the userId the state was issued for, or null if expired/unknown. */
+  getOAuthState(state: string): Promise<string | null>;
+  /** Consume (delete) the state after successful exchange. States are single-use. */
+  deleteOAuthState(state: string): Promise<void>;
+
+  /**
+   * Persist the GitHub user identity associated with a Cognito workspace.
+   * Replaces the older GITHUB_INSTALLATION item for new-style connections.
+   */
+  saveGitHubUser(
+    userId: string,
+    data: { githubUserId: number; githubUsername: string; installationIds: number[] },
+  ): Promise<void>;
+  /** Returns the GitHub user record for this Cognito userId, or null. */
+  getGitHubUser(
+    userId: string,
+  ): Promise<{ githubUserId: number; githubUsername: string; installationIds: number[] } | null>;
 
   createInvestigation(investigation: Investigation): Promise<Investigation>;
   getInvestigation(id: string): Promise<Investigation | null>;

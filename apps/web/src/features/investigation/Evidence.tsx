@@ -52,9 +52,9 @@ export function EvidencePanel({
       />
 
       {/* The trust statement, stated plainly and always present. */}
-      <div className="flex items-start gap-2 border-b border-[--color-line] bg-[--color-surface-sunken] px-4 py-2.5">
-        <Sparkles size={13} className="mt-0.5 shrink-0 text-[--color-ink-subtle]" />
-        <p className="text-[0.72rem] leading-relaxed text-[--color-ink-subtle]">
+      <div className="flex items-start gap-2 border-b border-line bg-surface-sunken px-4 py-2.5">
+        <Sparkles size={13} className="mt-0.5 shrink-0 text-ink-subtle" />
+        <p className="text-[0.72rem] leading-relaxed text-ink-subtle">
           {modelUsed
             ? 'A model investigated and explained this change. Every claim below was then re-derived by deterministic code — the model cannot mark anything verified.'
             : 'The model was unavailable for this investigation, so everything below comes from deterministic analysis alone.'}
@@ -62,17 +62,17 @@ export function EvidencePanel({
       </div>
 
       {verifications.length > 0 ? (
-        <ul className="divide-y divide-[--color-line] border-b border-[--color-line]">
+        <ul className="divide-y divide-line border-b border-line">
           {verifications.map((result) => (
             <li key={result.id} className="px-4 py-3">
               <div className="flex items-center justify-between gap-2">
                 <VerificationBadge status={result.status} />
-                <Mono className="text-[--color-ink-subtle]">
+                <Mono className="text-ink-subtle">
                   {result.verifier} · {result.phase === 'POST_FIX' ? 'after fix' : 'before fix'}
                 </Mono>
               </div>
-              <p className="mt-2 text-[0.82rem] font-medium text-[--color-ink]">{result.claim}</p>
-              <p className="mt-1 text-xs leading-relaxed text-[--color-ink-muted]">{result.detail}</p>
+              <p className="mt-2 text-[0.82rem] font-medium text-ink">{result.claim}</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">{result.detail}</p>
             </li>
           ))}
         </ul>
@@ -85,7 +85,7 @@ export function EvidencePanel({
             description="Evidence appears as Netra establishes facts about the repository."
           />
         ) : (
-          <ul className="divide-y divide-[--color-line]">
+          <ul className="divide-y divide-line">
             {evidence.map((item, index) => (
               <EvidenceRow
                 key={item.id}
@@ -132,33 +132,33 @@ function EvidenceRow({
   };
 
   return (
-    <li className={cn('transition-colors', highlighted && 'bg-[--color-surface-raised]')}>
+    <li className={cn('transition-colors', highlighted && 'bg-surface-raised')}>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={expanded}
-        className="flex w-full items-start gap-2.5 px-4 py-3 text-left hover:bg-[--color-surface-raised]"
+        className="flex w-full items-start gap-2.5 px-4 py-3 text-left hover:bg-surface-raised"
       >
         <ChevronRight
           size={14}
           className={cn(
-            'mt-0.5 shrink-0 text-[--color-ink-subtle] transition-transform',
+            'mt-0.5 shrink-0 text-ink-subtle transition-transform',
             expanded && 'rotate-90',
           )}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <span className="mono text-[0.68rem] font-semibold text-[--color-ink-subtle]">
+            <span className="mono text-[0.68rem] font-semibold text-ink-subtle">
               #{String(index).padStart(2, '0')}
             </span>
-            <Mono className="truncate text-[--color-ink]">
+            <Mono className="truncate text-ink">
               {item.file}
               {item.line !== null ? `:${item.line}` : ''}
             </Mono>
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-[--color-ink-muted]">{item.relationship}</p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-muted">{item.relationship}</p>
         </div>
-        <span className="mono shrink-0 text-[0.62rem] uppercase tracking-wider text-[--color-ink-subtle]">
+        <span className="mono shrink-0 text-[0.62rem] uppercase tracking-wider text-ink-subtle">
           {KIND_LABEL[item.kind]}
         </span>
       </button>
@@ -174,27 +174,27 @@ function EvidenceRow({
           >
             <div className="space-y-2.5 px-4 pb-4 pl-11">
               <div className="relative">
-                <pre className="mono overflow-x-auto rounded-md border border-[--color-line] bg-[--color-surface-sunken] px-3 py-2.5 text-[0.72rem] leading-relaxed text-[--color-ink]">
+                <pre className="mono overflow-x-auto rounded-md border border-line bg-surface-sunken px-3 py-2.5 text-[0.72rem] leading-relaxed text-ink">
                   {item.snippet}
                 </pre>
                 <button
                   type="button"
                   onClick={() => void copy(item.snippet)}
-                  className="absolute right-2 top-2 rounded p-1 text-[--color-ink-subtle] hover:bg-[--color-surface-raised] hover:text-[--color-ink]"
+                  className="absolute right-2 top-2 rounded p-1 text-ink-subtle hover:bg-surface-raised hover:text-ink"
                   aria-label="Copy snippet"
                 >
                   {copied ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
               {item.producedByCommand ? (
-                <p className="text-[0.68rem] text-[--color-ink-subtle]">
+                <p className="text-[0.68rem] text-ink-subtle">
                   Produced by{' '}
-                  <Mono className="text-[--color-ink-muted]">{item.producedBy}</Mono> running{' '}
-                  <Mono className="text-[--color-ink-muted]">{item.producedByCommand}</Mono>
+                  <Mono className="text-ink-muted">{item.producedBy}</Mono> running{' '}
+                  <Mono className="text-ink-muted">{item.producedByCommand}</Mono>
                 </p>
               ) : (
-                <p className="text-[0.68rem] text-[--color-ink-subtle]">
-                  Produced by <Mono className="text-[--color-ink-muted]">{item.producedBy}</Mono>
+                <p className="text-[0.68rem] text-ink-subtle">
+                  Produced by <Mono className="text-ink-muted">{item.producedBy}</Mono>
                 </p>
               )}
             </div>

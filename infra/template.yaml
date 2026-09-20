@@ -47,6 +47,33 @@ Parameters:
     Default: ''
     Description: Role EventBridge assumes to start a state machine execution.
 
+  DeployPublicSurface:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether this stack also owns the public read API (Lambda Function URL) and
+      the web bucket + CloudFront distribution. Both currently exist outside the
+      stack, so adopting them is a deliberate, separate step: CloudFormation
+      refuses to create an S3 bucket whose name is already taken, which blocks
+      every unrelated deployment until the switch is thrown on purpose.
+
+  CognitoUserPoolId:
+    Type: String
+    Default: ''
+    Description: >-
+      Cognito user pool that issues the tokens the approval endpoint trusts
+      (e.g. eu-north-1_xxxxxxxxx). Public identifier, not a secret. Approval is
+      a privileged action, so the endpoint refuses to deploy open: with no pool
+      configured the DeployApproval condition leaves it unbuilt.
+
+  CognitoClientId:
+    Type: String
+    Default: ''
+    Description: >-
+      Cognito app client id the approval endpoint accepts as the token audience.
+      Public identifier, not a secret.
+
   ModelSecretPopulated:
     Type: String
     Default: 'false'
@@ -93,6 +120,14 @@ Conditions:
     - !Not [!Equals [!Ref LambdaRoleArn, '']]
     - !Not [!Equals [!Ref StateMachineRoleArn, '']]
     - !Not [!Equals [!Ref InvestigatorImageUri, '']]
+  # The approval endpoint launches a task that writes to a customer repository.
+  # It deploys only when an identity provider is configured to authenticate it,
+  # so an unauthenticated approval endpoint cannot exist by omission.
+  DeployPublic: !Equals [!Ref DeployPublicSurface, 'true']
+  DeployApproval: !And
+    - !Condition DeployWorkflow
+    - !Not [!Equals [!Ref CognitoUserPoolId, '']]
+    - !Not [!Equals [!Ref CognitoClientId, '']]
 
 Globals:
   Function:
@@ -432,7 +467,7 @@ Resources:
 
   ApproveInvestigationFunction:
     Type: AWS::Serverless::Function
-    Condition: DeployWorkflow
+    Condition: DeployApproval
     Properties:
       FunctionName: !Sub 'netra-${Stage}-approve-investigation'
       CodeUri: ../services/orchestrator/dist
@@ -458,10 +493,23 @@ Resources:
 
   ApprovalApi:
     Type: AWS::Serverless::HttpApi
-    Condition: DeployWorkflow
+    Condition: DeployApproval
     Properties:
       StageName: !Ref Stage
       Description: Netra human approval endpoint for investigation remediations.
+      # Approving launches a Fargate task that pushes a commit to the customer's
+      # repository. API Gateway verifies the Cognito JWT (signature, issuer,
+      # audience, expiry) before the Lambda ever runs; the Lambda then does its
+      # own per-investigation ownership check on the verified claims.
+      Auth:
+        DefaultAuthorizer: CognitoJwt
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+              audience:
+                - !Ref CognitoClientId
       CorsConfiguration:
         AllowOrigins:
           - '*'
@@ -474,7 +522,7 @@ Resources:
 
   ApproveInvestigationLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: DeployWorkflow
+    Condition: DeployApproval
     Properties:
       LogGroupName: !Sub '/aws/lambda/netra-${Stage}-approve-investigation'
       RetentionInDays: !Ref LogRetentionDays
@@ -590,6 +638,149 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
 
+  # ── Investigation API (public, read-only, demo-safe) ─────────────────────
+
+  NetraApiFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeployPublic
+    Properties:
+      FunctionName: !Sub 'netra-${Stage}-api'
+      Description: >-
+        Netra Investigation API. Wraps the Fastify HTTP server in a Lambda
+        Function URL so the frontend can query investigations from DynamoDB
+        without exposing AWS credentials to the browser.
+      Handler: lambda.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      CodeUri: ../services/api/dist-lambda/
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          NODE_ENV: production
+          # Read investigations from the production DynamoDB table.
+          NETRA_TABLE_NAME: !Sub 'netra-${Stage}-investigations'
+          # Allow the CloudFront origin and any localhost dev URL.
+          # The exact CloudFront domain is not known at deploy time, so we
+          # allow all origins for the demo deployment.
+          NETRA_ALLOWED_ORIGINS: '*'
+          # Enable demo mode so unauthenticated guests can browse investigations.
+          VITE_DEMO_MODE_ENABLED: 'true'
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Scan
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:TransactWriteItems
+              Resource:
+                - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/netra-${Stage}-investigations'
+                - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/netra-${Stage}-investigations/*'
+
+  NetraApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Condition: DeployPublic
+    Properties:
+      TargetFunctionArn: !GetAtt NetraApiFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - authorization
+          - content-type
+          - x-amz-date
+          - x-amz-security-token
+        # Preflight is handled by the Function URL itself; OPTIONS is not a
+        # valid entry here and CloudFormation rejects it.
+        AllowMethods:
+          - GET
+          - POST
+        MaxAge: 300
+
+  NetraApiFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: DeployPublic
+    Properties:
+      FunctionName: !GetAtt NetraApiFunction.Arn
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # ── Frontend static hosting (S3 + CloudFront) ────────────────────────────
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Condition: DeployPublic
+    Properties:
+      BucketName: !Sub 'netra-${Stage}-web-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+  WebBucketOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: DeployPublic
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'netra-${Stage}-web-oac'
+        Description: Grants CloudFront read access to the web bucket.
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: DeployPublic
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}'
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: DeployPublic
+    Properties:
+      DistributionConfig:
+        Comment: !Sub 'Netra ${Stage} web application'
+        Enabled: true
+        HttpVersion: http2and3
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100  # US/EU only — cheapest for demos
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt WebBucketOAC.Id
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # CORS-S3Origin
+        # Route all 403/404s back to index.html so the React SPA handles them.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+
 Outputs:
   WebhookUrl:
     Description: Paste this into the GitHub App's "Webhook URL" field.
@@ -653,14 +844,36 @@ Outputs:
     Value: !Sub 'netra/${Stage}/model/openrouter'
 
   ApprovalApiUrl:
-    Condition: DeployWorkflow
+    Condition: DeployApproval
     Description: >-
       Approval endpoint. POST /investigations/{id}/approve with {actionId} in
-      the JSON body to approve a AWAITING_APPROVAL investigation.
+      the JSON body and a Cognito bearer token in the Authorization header to
+      approve an AWAITING_APPROVAL investigation.
     Value: !Sub 'https://${ApprovalApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}'
 
   ApproveInvestigationFunctionName:
-    Condition: DeployWorkflow
+    Condition: DeployApproval
     Description: Lambda function name for the approval handler.
     Value: !Ref ApproveInvestigationFunction
+
+  # ── Public-facing API and Web ───────────────────────────────────────────────
+
+  ApiUrl:
+    Condition: DeployPublic
+    Description: >-
+      Public URL of the Netra Investigation API (Lambda Function URL).
+      Set VITE_API_BASE_URL to this value when building the frontend.
+    Value: !GetAtt NetraApiFunctionUrl.FunctionUrl
+
+  WebUrl:
+    Condition: DeployPublic
+    Description: >-
+      Public HTTPS URL of the Netra web application (CloudFront distribution).
+      Share this link for demos.
+    Value: !Sub 'https://${WebDistribution.DomainName}'
+
+  WebBucketName:
+    Condition: DeployPublic
+    Description: S3 bucket holding the compiled frontend assets.
+    Value: !Ref WebBucket
 

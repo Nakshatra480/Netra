@@ -13,6 +13,7 @@ persist, and never logged.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import subprocess
@@ -248,11 +249,11 @@ def create_pull_request(
             logger.info("pull request created", extra={"pr_url": html_url})
             return html_url
     except urllib.error.HTTPError as err:
+        # The body is optional context for the error message; failing to read
+        # it must not replace the HTTP failure with a less useful one.
         body_text = ""
-        try:
+        with contextlib.suppress(Exception):
             body_text = err.read().decode("utf-8", errors="replace")[:200]
-        except Exception:  # noqa: BLE001
-            pass
         raise GitHubUnavailable(
             f"GitHub refused PR creation (HTTP {err.code}): {body_text}"
         ) from None

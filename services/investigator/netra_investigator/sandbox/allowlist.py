@@ -127,6 +127,28 @@ def git_changed_files(base_sha: str, head_sha: str) -> SandboxCommand:
     )
 
 
+def git_changed_file_stats(base_sha: str, head_sha: str) -> SandboxCommand:
+    """Count the lines each changed file added and removed.
+
+    `--name-status` says what happened to a file; it does not say how much.
+    The line counts the report shows come from here, so they are measured
+    rather than estimated. Binary files report "-" for both, which the caller
+    reads as "not countable" instead of zero.
+    """
+    return _command(
+        "inspect_diff",
+        Binary.GIT,
+        "--no-optional-locks",
+        "-C",
+        WORKSPACE,
+        "diff",
+        "--numstat",
+        "--no-color",
+        validate_sha(base_sha),
+        validate_sha(head_sha),
+    )
+
+
 def git_diff(base_sha: str, head_sha: str, path: str | None = None) -> SandboxCommand:
     """Show the unified diff between two commits, optionally scoped to a path."""
     args = [

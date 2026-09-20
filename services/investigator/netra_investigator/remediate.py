@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -172,8 +173,18 @@ def verify_after_fix(
     base_sha: str,
     fixed_sha: str,
     config: InvestigatorConfig | None = None,
+    sandbox_factory: SandboxFactory | None = None,
 ) -> dict[str, Any]:
-    """Re-run the deterministic check against the remediated commit."""
+    """Re-run the deterministic check against the remediated commit.
+
+    This is what earns RESOLVED. A patch applying cleanly says the diff was
+    well-formed; it says nothing about whether the credential still reaches the
+    bundle. Only re-running the analyzer against the new commit can say that.
+
+    `sandbox_factory` exists because the boundary differs by environment: a
+    container per investigation locally, and the Fargate task itself in AWS,
+    which cannot nest containers.
+    """
     cfg = config or InvestigatorConfig.from_env()
     emitter.status_changed("POST_FIX_VERIFY")
     emitter.verification_started(VERIFIER_ID, finding_id)
@@ -182,14 +193,20 @@ def verify_after_fix(
     limits = SandboxLimits(
         memory_mb=cfg.sandbox_memory_mb, command_timeout_s=cfg.sandbox_timeout_s
     )
-    with DockerSandbox(
-        repo_path, image=cfg.sandbox_image, limits=limits, checkout=fixed_sha
-    ) as sandbox:
+    make_sandbox = sandbox_factory or _default_sandbox
+    with make_sandbox(repo_path, cfg.sandbox_image, limits, fixed_sha) as sandbox:
         tools = InvestigationTools(sandbox, emitter, base_sha, fixed_sha)
         report = SecretFlowAnalyzer(tools).analyze()
         duration = sum(call.duration_ms for call in tools.calls)
 
-    result = build_verification(finding_id, report, duration_ms=duration, phase="POST_FIX")
+    result = build_verification(
+        finding_id,
+        report,
+        duration_ms=duration,
+        phase="POST_FIX",
+        pre_fix_sha=base_sha,
+        post_fix_sha=fixed_sha,
+    )
     emitter.verification_completed(VERIFIER_ID, finding_id, result)
 
     if result["status"] == "REFUTED":
@@ -202,6 +219,17 @@ def verify_after_fix(
             "FAILED", "Post-fix verification still finds the credential exposure."
         )
     return result
+
+
+#: How a sandbox is created for verification. Mirrors the investigation
+#: pipeline so both paths share one notion of the isolation boundary.
+SandboxFactory = Callable[[Path, str, SandboxLimits, str], Any]
+
+
+def _default_sandbox(
+    repo_path: Path, image: str, limits: SandboxLimits, checkout: str
+) -> Any:
+    return DockerSandbox(repo_path, image=image, limits=limits, checkout=checkout)
 
 
 def _git(repo_path: Path, *args: str) -> str:

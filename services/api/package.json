@@ -8,7 +8,10 @@
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bundle": "mkdir -p /tmp/netra-lambda-bundle && npx esbuild src/lambda.ts --bundle --platform=node --target=node22 --format=cjs --external:@aws-sdk/client-dynamodb --external:@aws-sdk/lib-dynamodb --external:@aws-sdk/client-eventbridge --external:@aws-sdk/client-s3 --outfile=/tmp/netra-lambda-bundle/lambda.js",
+    "deploy:lambda": "npm run bundle && cd /tmp/netra-lambda-bundle && zip -q lambda.zip lambda.js && AWS_PROFILE=netra aws lambda update-function-code --function-name netra-prod-api --zip-file fileb://lambda.zip --region eu-north-1 --query CodeSize --output text",
+    "env:restore": "node scripts/restore-env.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.687.0",

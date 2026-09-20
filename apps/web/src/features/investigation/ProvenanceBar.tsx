@@ -23,16 +23,16 @@ export function ProvenanceBar({
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-[--color-line] px-5 py-2.5 text-xs',
+        'flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-line px-5 py-2.5 text-xs',
         className,
       )}
     >
       <span className="flex items-center gap-1.5">
         <BrainCircuit
           size={13}
-          className={modelUsed ? 'text-[--color-state-active]' : 'text-[--color-ink-subtle]'}
+          className={modelUsed ? 'text-state-active' : 'text-ink-subtle'}
         />
-        <span className={modelUsed ? 'text-[--color-ink]' : 'text-[--color-ink-muted]'}>
+        <span className={modelUsed ? 'text-ink' : 'text-ink-muted'}>
           {provenance.display}
         </span>
       </span>
@@ -61,7 +61,7 @@ export function ProvenanceBar({
       </Stat>
 
       {provenance.fallbackReason ? (
-        <span className="text-[--color-state-review]">
+        <span className="text-state-review">
           Fell back: {provenance.fallbackReason}
         </span>
       ) : null}
@@ -79,10 +79,10 @@ function Stat({
   children: React.ReactNode;
 }) {
   return (
-    <span className="flex items-center gap-1.5 text-[--color-ink-subtle]">
+    <span className="flex items-center gap-1.5 text-ink-subtle">
       {icon}
       {label}
-      <span className="mono text-[--color-ink-muted]">{children}</span>
+      <span className="mono text-ink-muted">{children}</span>
     </span>
   );
 }

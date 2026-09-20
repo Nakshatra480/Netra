@@ -1,8 +1,11 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Action,
@@ -18,6 +21,7 @@ import type {
   Repository,
   VerificationResult,
   Workspace,
+  ChangedFile,
 } from '@netra/domain';
 import { NotFoundError, type Store } from './types.js';
 
@@ -51,6 +55,35 @@ function str(v: unknown): string | null {
 
 function num(v: unknown): number | null {
   return typeof v === 'number' ? v : null;
+}
+
+/**
+ * The files a change touched, as the investigator measured them.
+ *
+ * Anything malformed is dropped rather than guessed at: a file list is part of
+ * the report, and a fabricated row in it would be indistinguishable from a
+ * real one. A binary file has no line count, which the investigator records as
+ * null; the schema has no way to say that, so it becomes zero here and the UI
+ * simply shows no +/- for it.
+ */
+function toChangedFiles(value: unknown): ChangedFile[] {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(['ADDED', 'MODIFIED', 'DELETED', 'RENAMED']);
+  const files: ChangedFile[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    const path = str(row.path);
+    if (!path) continue;
+    const changeType = str(row.changeType) ?? 'MODIFIED';
+    files.push({
+      path,
+      changeType: (allowed.has(changeType) ? changeType : 'MODIFIED') as ChangedFile['changeType'],
+      additions: Math.max(0, num(row.additions) ?? 0),
+      deletions: Math.max(0, num(row.deletions) ?? 0),
+    });
+  }
+  return files;
 }
 
 function bool(v: unknown): boolean {
@@ -132,7 +165,21 @@ function toModelProvenance(v: unknown): ModelProvenance | null {
 // Mappers
 // ---------------------------------------------------------------------------
 
-function metaToInvestigation(item: Record<string, unknown>): Investigation {
+function itemToRepository(item: Record<string, unknown>): Repository {
+  return {
+    id: str(item.id) ?? '',
+    workspaceId: str(item.workspaceId) ?? '',
+    provider: (str(item.provider) ?? 'GITHUB') as Repository['provider'],
+    fullName: str(item.fullName) ?? '',
+    defaultBranch: str(item.defaultBranch) ?? 'main',
+    githubInstallationId: num(item.githubInstallationId),
+    githubRepositoryId: num(item.githubRepositoryId),
+    monitoringEnabled: bool(item.monitoringEnabled),
+    createdAt: str(item.createdAt) ?? new Date().toISOString(),
+  };
+}
+
+export function metaToInvestigation(item: Record<string, unknown>): Investigation {
   const id = str(item.id) ?? String(item.pk ?? '').replace('INV#', '');
   const repository = str(item.repository) ?? '';
   const refSuffix = id.replace(/[^a-zA-Z0-9]/g, '').slice(-8).toUpperCase();
@@ -152,7 +199,7 @@ function metaToInvestigation(item: Record<string, unknown>): Investigation {
       title: str(item.changeTitle) ?? repository,
       author: str(item.author) ?? 'unknown',
     },
-    changedFiles: [],
+    changedFiles: toChangedFiles(item.changedFiles),
     status: (str(item.status) ?? 'CREATED') as InvestigationStatus,
     severity: str(item.severity) as Investigation['severity'],
     summary: str(item.summary),
@@ -199,33 +246,13 @@ function remediationItem(
 }
 
 // ---------------------------------------------------------------------------
-// Known investigation IDs
+// Investigation listing
 //
-// The production DynamoDB table has no GSI and the Lambda execution role
-// (netra-lambda-role) grants GetItem/BatchGetItem but NOT Scan.  We keep a
-// static manifest of known IDs populated from a one-time admin scan; new
-// investigations triggered by GitHub webhooks are appended here manually.
+// The table's primary key is pk=INV#<id>, sk=META|ACTION|EVENT|... 
+// To list investigations we scan for sk=META records and sort by startedAt.
+// The Lambda role now has dynamodb:Scan permission on this table.
 // ---------------------------------------------------------------------------
 
-const KNOWN_INVESTIGATION_IDS: string[] = [
-  'inv_verify1789808463',
-  'inv_8dcbc2eab40b11f1807584bd',
-  'inv_permrecheck1789757605',
-  'inv_4da2165cb39211f196d96f0a',
-  'inv_f66375c2b41111f19f03512f',
-  'inv_d4e62550b40911f181f65538',
-  'inv_fixture1789796623credent',
-  'inv_56d450a0b39211f193826535',
-  'inv_postrollback1789759737',
-  'inv_d5923430b40911f19b95285b',
-  'inv_verify2_1789808939',
-  'inv_92c1d16cb40711f1933cc8a8',
-  'inv_027f5c10b3ed11f198bf440b',
-  'inv_93b3f050b40711f194d0d459',
-  'inv_2cddaaf6b3ee11f1973a132b',
-  'inv_fixture1789797123credexp',
-  'inv_b05aceecb40a11f18e4eb8a2',
-];
 
 // ---------------------------------------------------------------------------
 // Store
@@ -272,19 +299,265 @@ export class DynamoStore implements Store {
   }
 
   // -------------------------------------------------------------------------
-  // Repository (synthesised)
+  // -------------------------------------------------------------------------
+  // Repository
+  //
+  // Single-table design — no GSI needed:
+  //   pk=REPO#<id>               sk=META          → primary item
+  //   pk=REPO_BY_FULL_NAME#<fn>  sk=REPO          → lookup by fullName (webhook routing)
+  //   pk=REPO_BY_WORKSPACE#<wid> sk=REPO#<id>     → list repos in workspace
+  //
+  // createRepository is idempotent: a second call for the same workspace+fullName
+  // returns the existing repository rather than creating a duplicate.
   // -------------------------------------------------------------------------
 
   async createRepository(repository: Repository): Promise<Repository> {
+    // Idempotency: check if a repo with the same fullName already exists in this workspace.
+    const existing = await this.getRepositoryByFullName(repository.fullName);
+    if (existing && existing.workspaceId === repository.workspaceId) {
+      return existing;
+    }
+
+    // Write three items atomically:
+    //   1. Primary item (REPO#id / META)
+    //   2. FullName lookup item (REPO_BY_FULL_NAME#fullName / REPO)
+    //   3. Workspace list item (REPO_BY_WORKSPACE#workspaceId / REPO#id)
+    await this.#db.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.#table,
+              Item: {
+                pk: `REPO#${repository.id}`,
+                sk: 'META',
+                id: repository.id,
+                workspaceId: repository.workspaceId,
+                provider: repository.provider,
+                fullName: repository.fullName,
+                defaultBranch: repository.defaultBranch,
+                githubInstallationId: repository.githubInstallationId ?? null,
+                githubRepositoryId: repository.githubRepositoryId ?? null,
+                monitoringEnabled: repository.monitoringEnabled,
+                createdAt: repository.createdAt,
+              },
+              // Prevent silent overwrite of a different repo on the same id.
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+          {
+            Put: {
+              TableName: this.#table,
+              Item: {
+                pk: `REPO_BY_FULL_NAME#${repository.fullName}`,
+                sk: 'REPO',
+                repositoryId: repository.id,
+                workspaceId: repository.workspaceId,
+                fullName: repository.fullName,
+              },
+            },
+          },
+          {
+            Put: {
+              TableName: this.#table,
+              Item: {
+                pk: `REPO_BY_WORKSPACE#${repository.workspaceId}`,
+                sk: `REPO#${repository.id}`,
+                repositoryId: repository.id,
+                fullName: repository.fullName,
+                createdAt: repository.createdAt,
+              },
+            },
+          },
+        ],
+      }),
+    );
     return repository;
   }
 
-  async getRepository(_id: string): Promise<Repository | null> {
-    return null;
+  async getRepository(id: string): Promise<Repository | null> {
+    const r = await this.#db.send(
+      new GetCommand({
+        TableName: this.#table,
+        Key: { pk: `REPO#${id}`, sk: 'META' },
+      }),
+    );
+    if (!r.Item) return null;
+    return itemToRepository(r.Item as Record<string, unknown>);
   }
 
-  async listRepositories(_workspaceId: string): Promise<Repository[]> {
-    return [];
+  /**
+   * Direct-key lookup by GitHub full name (owner/repo).
+   * Used by the webhook routing path to map fullName → workspaceId.
+   * O(1) GetItem — no scan, no GSI required.
+   */
+  async getRepositoryByFullName(fullName: string): Promise<Repository | null> {
+    const r = await this.#db.send(
+      new GetCommand({
+        TableName: this.#table,
+        Key: { pk: `REPO_BY_FULL_NAME#${fullName}`, sk: 'REPO' },
+      }),
+    );
+    if (!r.Item) return null;
+    const item = r.Item as Record<string, unknown>;
+    const repoId = typeof item.repositoryId === 'string' ? item.repositoryId : null;
+    if (!repoId) return null;
+    return this.getRepository(repoId);
+  }
+
+  async listRepositories(workspaceId: string): Promise<Repository[]> {
+    // Query the workspace index items, then batch-fetch full repo records.
+    const q = await this.#db.send(
+      new QueryCommand({
+        TableName: this.#table,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        ExpressionAttributeValues: {
+          ':pk': `REPO_BY_WORKSPACE#${workspaceId}`,
+          ':prefix': 'REPO#',
+        },
+      }),
+    );
+    const items = (q.Items ?? []) as Array<Record<string, unknown>>;
+    if (items.length === 0) return [];
+
+    // Fetch all repo META items in parallel.
+    const repos = await Promise.all(
+      items.map((item) => {
+        const id = typeof item.repositoryId === 'string' ? item.repositoryId : '';
+        return id ? this.getRepository(id) : Promise.resolve(null);
+      }),
+    );
+    return repos.filter((r): r is Repository => r !== null);
+  }
+
+  /**
+   * Persist the GitHub App installation ID for a workspace.
+   *
+   * Single-table design:
+   *   pk = WORKSPACE#<workspaceId>
+   *   sk = GITHUB_INSTALLATION
+   *
+   * This is a separate item from the workspace META record, keeping concerns
+   * separated and avoiding overwriting workspace fields on update.
+   */
+  async saveWorkspaceInstallation(workspaceId: string, installationId: number): Promise<void> {
+    await this.#db.send(
+      new PutCommand({
+        TableName: this.#table,
+        Item: {
+          pk: `WORKSPACE#${workspaceId}`,
+          sk: 'GITHUB_INSTALLATION',
+          installationId,
+          linkedAt: new Date().toISOString(),
+        },
+      }),
+    );
+  }
+
+  async getWorkspaceInstallation(workspaceId: string): Promise<number | null> {
+    const r = await this.#db.send(
+      new GetCommand({
+        TableName: this.#table,
+        Key: { pk: `WORKSPACE#${workspaceId}`, sk: 'GITHUB_INSTALLATION' },
+      }),
+    );
+    if (!r.Item) return null;
+    const id = (r.Item as Record<string, unknown>).installationId;
+    return typeof id === 'number' ? id : null;
+  }
+
+  /**
+   * OAuth state tokens.
+   *
+   * Single-table design:
+   *   pk = GITHUB_OAUTH_STATE#<state>
+   *   sk = STATE
+   *   userId = <cognitoSub>
+   *   ttl    = <unix-seconds>  ← DynamoDB TTL auto-deletes expired items
+   */
+  async saveOAuthState(state: string, userId: string, ttlSeconds = 600): Promise<void> {
+    await this.#db.send(
+      new PutCommand({
+        TableName: this.#table,
+        Item: {
+          pk: `GITHUB_OAUTH_STATE#${state}`,
+          sk: 'STATE',
+          userId,
+          ttl: Math.floor(Date.now() / 1000) + ttlSeconds,
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    );
+  }
+
+  async getOAuthState(state: string): Promise<string | null> {
+    const r = await this.#db.send(
+      new GetCommand({
+        TableName: this.#table,
+        Key: { pk: `GITHUB_OAUTH_STATE#${state}`, sk: 'STATE' },
+      }),
+    );
+    if (!r.Item) return null;
+    const item = r.Item as Record<string, unknown>;
+    // Guard against DynamoDB TTL not yet cleaning up expired items
+    const ttl = typeof item.ttl === 'number' ? item.ttl : 0;
+    if (Math.floor(Date.now() / 1000) > ttl) return null;
+    return typeof item.userId === 'string' ? item.userId : null;
+  }
+
+  async deleteOAuthState(state: string): Promise<void> {
+    await this.#db.send(
+      new DeleteCommand({
+        TableName: this.#table,
+        Key: { pk: `GITHUB_OAUTH_STATE#${state}`, sk: 'STATE' },
+      }),
+    );
+  }
+
+  /**
+   * GitHub user identity linked to a Netra workspace.
+   *
+   * Single-table design:
+   *   pk = WORKSPACE#<userId>
+   *   sk = GITHUB_USER
+   */
+  async saveGitHubUser(
+    userId: string,
+    data: { githubUserId: number; githubUsername: string; installationIds: number[] },
+  ): Promise<void> {
+    await this.#db.send(
+      new PutCommand({
+        TableName: this.#table,
+        Item: {
+          pk: `WORKSPACE#${userId}`,
+          sk: 'GITHUB_USER',
+          githubUserId: data.githubUserId,
+          githubUsername: data.githubUsername,
+          installationIds: data.installationIds,
+          linkedAt: new Date().toISOString(),
+        },
+      }),
+    );
+  }
+
+  async getGitHubUser(
+    userId: string,
+  ): Promise<{ githubUserId: number; githubUsername: string; installationIds: number[] } | null> {
+    const r = await this.#db.send(
+      new GetCommand({
+        TableName: this.#table,
+        Key: { pk: `WORKSPACE#${userId}`, sk: 'GITHUB_USER' },
+      }),
+    );
+    if (!r.Item) return null;
+    const item = r.Item as Record<string, unknown>;
+    return {
+      githubUserId: typeof item.githubUserId === 'number' ? item.githubUserId : 0,
+      githubUsername: typeof item.githubUsername === 'string' ? item.githubUsername : '',
+      installationIds: Array.isArray(item.installationIds)
+        ? (item.installationIds as number[])
+        : [],
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -314,19 +587,22 @@ export class DynamoStore implements Store {
    * Promise.all runs them concurrently so latency ≈ single GetItem RTT.
    */
   async listInvestigations(_workspaceId: string, limit: number): Promise<Investigation[]> {
-    if (KNOWN_INVESTIGATION_IDS.length === 0) return [];
-
-    const results = await Promise.all(
-      KNOWN_INVESTIGATION_IDS.map((id) =>
-        this.#db
-          .send(new GetCommand({ TableName: this.#table, Key: { pk: `INV#${id}`, sk: 'META' } }))
-          .then((r) => r.Item as Record<string, unknown> | undefined)
-          .catch(() => undefined),
-      ),
+    // Scan for all META records (one per investigation) and return the most
+    // recent ones. The Lambda role now has dynamodb:Scan on this table.
+    const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+    const resp = await this.#db.send(
+      new ScanCommand({
+        TableName: this.#table,
+        FilterExpression: 'sk = :sk AND begins_with(pk, :pfx)',
+        ExpressionAttributeValues: { ':sk': 'META', ':pfx': 'INV#' },
+        // Fetch more than limit to allow sorting — DynamoDB scan order is undefined
+        Limit: Math.max(limit * 10, 200),
+      }),
     );
 
-    return results
-      .filter((item): item is Record<string, unknown> => !!item && typeof item['id'] === 'string' && !!item['id'])
+    const items = (resp.Items ?? []) as Record<string, unknown>[];
+    return items
+      .filter((item) => typeof item['id'] === 'string' && !!item['id'])
       .map((item) => metaToInvestigation(item))
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, limit);

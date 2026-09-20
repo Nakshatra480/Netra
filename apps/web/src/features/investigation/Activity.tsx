@@ -26,7 +26,7 @@ export function ActivityRail({
     <section className={cn('panel flex min-h-0 flex-col overflow-hidden', className)}>
       <PanelHeader title="Investigation activity" />
 
-      <ol className="border-b border-[--color-line] px-4 py-3" aria-label="Investigation progress">
+      <ol className="border-b border-line px-4 py-3" aria-label="Investigation progress">
         {INVESTIGATION_PHASES.map((phase, index) => {
           const done = currentPhase > index || status === 'RESOLVED';
           const active = currentPhase === index;
@@ -34,10 +34,10 @@ export function ActivityRail({
             <li key={phase} className="flex items-center gap-2.5 py-[3px]">
               <span
                 className={cn(
-                  'grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[--color-ink-subtle]',
-                  done && 'border-[--color-state-resolved] text-[--color-state-resolved]',
-                  active && 'border-[--color-state-active] text-[--color-state-active]',
-                  !done && !active && 'border-[--color-line]',
+                  'grid h-4 w-4 shrink-0 place-items-center rounded-full border text-ink-subtle',
+                  done && 'border-state-resolved text-state-resolved',
+                  active && 'border-state-active text-state-active',
+                  !done && !active && 'border-line',
                 )}
               >
                 {done ? (
@@ -51,8 +51,8 @@ export function ActivityRail({
               <span
                 className={cn(
                   'text-xs',
-                  active ? 'font-medium text-[--color-ink]' : 'text-[--color-ink-subtle]',
-                  done && 'text-[--color-ink-muted]',
+                  active ? 'font-medium text-ink' : 'text-ink-subtle',
+                  done && 'text-ink-muted',
                 )}
               >
                 {STATUS_LABELS[phase]}
@@ -74,17 +74,17 @@ export function ActivityRail({
             >
               <span className="mt-0.5 shrink-0">
                 {activity.state === 'COMPLETED' ? (
-                  <Check size={12} className="text-[--color-state-resolved]" />
+                  <Check size={12} className="text-state-resolved" />
                 ) : activity.state === 'FAILED' ? (
-                  <X size={12} className="text-[--color-state-review]" />
+                  <X size={12} className="text-state-review" />
                 ) : (
-                  <LoaderCircle size={12} className="animate-spin text-[--color-state-active]" />
+                  <LoaderCircle size={12} className="animate-spin text-state-active" />
                 )}
               </span>
               <p
                 className={cn(
                   'text-xs leading-relaxed',
-                  activity.state === 'STARTED' ? 'text-[--color-ink]' : 'text-[--color-ink-muted]',
+                  activity.state === 'STARTED' ? 'text-ink' : 'text-ink-muted',
                 )}
               >
                 {activity.message}
@@ -93,7 +93,7 @@ export function ActivityRail({
           ))}
         </AnimatePresence>
         {activities.length === 0 ? (
-          <p className="text-xs text-[--color-ink-subtle]">Waiting for the investigation to start.</p>
+          <p className="text-xs text-ink-subtle">Waiting for the investigation to start.</p>
         ) : null}
       </div>
     </section>

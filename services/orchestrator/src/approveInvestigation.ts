@@ -9,7 +9,9 @@
  * by the ECS agent — this Lambda never reads or logs any secret.
  *
  * Trust model:
- *   - approver identity comes from the Cognito JWT/IAM context, never the body
+ *   - API Gateway verifies the Cognito JWT before this Lambda runs
+ *   - approver identity is the JWT `sub`, never the body; there is no fallback
+ *   - the subject must match the investigation's author, or the answer is 403
  *   - only AWAITING_APPROVAL + PENDING action can advance
  *   - the diff is byte-for-byte what the reviewer approved (stored in DynamoDB)
  */
@@ -17,7 +19,10 @@
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
-import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import type {
+  APIGatewayProxyEventV2WithJWTAuthorizer,
+  APIGatewayProxyResultV2,
+} from 'aws-lambda';
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment; never from the request)
@@ -65,6 +70,7 @@ async function recordApproval(
   actionId: string,
   approver: string,
   note: string | null,
+  approverEmail: string | null,
 ): Promise<void> {
   const now = new Date().toISOString();
 
@@ -74,11 +80,13 @@ async function recordApproval(
       new UpdateCommand({
         TableName: TABLE,
         Key: { pk: pk(investigationId), sk: 'ACTION' },
-        UpdateExpression: 'SET #s = :approved, approvedBy = :approver, decisionNote = :note, decidedAt = :now',
+        UpdateExpression:
+          'SET #s = :approved, approvedBy = :approver, approvedByEmail = :email, decisionNote = :note, decidedAt = :now',
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
           ':approved': 'APPROVED',
           ':approver': approver,
+          ':email': approverEmail,
           ':note': note,
           ':now': now,
           ':pending': 'PENDING',
@@ -211,7 +219,9 @@ async function launchRemediationTask(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+export async function handler(
+  event: APIGatewayProxyEventV2WithJWTAuthorizer,
+): Promise<APIGatewayProxyResultV2> {
   const investigationId = event.pathParameters?.id?.trim();
   if (!investigationId) {
     return respond(400, { error: { code: 'BAD_REQUEST', message: 'Missing investigation id' } });
@@ -228,15 +238,39 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return respond(400, { error: { code: 'BAD_REQUEST', message: 'actionId is required' } });
   }
 
-  // Approver identity from the verified JWT context — never from request body.
+  // Approver identity comes from the JWT that API Gateway already verified
+  // (signature, issuer, audience, expiry). There is no fallback identity: if
+  // the authorizer context has no subject the request is unauthenticated, and
+  // an unauthenticated caller cannot approve a push to someone's repository.
   const claims = event.requestContext.authorizer?.jwt?.claims ?? {};
-  const approver = (claims.email as string | undefined) ?? (claims.sub as string | undefined) ?? 'netra-operator';
+  const subject = typeof claims.sub === 'string' ? claims.sub.trim() : '';
+  if (!subject) {
+    log('WARN', 'approval rejected: no verified subject', { investigationId });
+    return respond(401, {
+      error: { code: 'UNAUTHENTICATED', message: 'A valid Cognito access token is required' },
+    });
+  }
+  // Identity used for authorization is always the subject. The email is
+  // recorded alongside it for the audit trail only.
+  const approver = subject;
+  const approverEmail = typeof claims.email === 'string' ? claims.email : null;
 
+  // The token itself is never logged — only the subject it resolved to.
   log('INFO', 'approval requested', { investigationId, actionId: body.actionId, approver });
 
   try {
     const meta = await get<Record<string, unknown>>(investigationId, 'META');
     if (!meta) return respond(404, { error: { code: 'NOT_FOUND', message: 'Investigation not found' } });
+
+    // The investigation must belong to the caller. `author` is written from the
+    // verified Cognito subject when the investigation is created, so this is a
+    // subject-to-subject comparison — never anything supplied by the client.
+    if (typeof meta.author !== 'string' || meta.author !== subject) {
+      log('WARN', 'approval rejected: subject does not own investigation', { investigationId });
+      return respond(403, {
+        error: { code: 'FORBIDDEN', message: 'You do not have access to this investigation' },
+      });
+    }
 
     if (meta.status !== 'AWAITING_APPROVAL') {
       return respond(409, { error: { code: 'CONFLICT', message: `Investigation is ${meta.status}, not AWAITING_APPROVAL` } });
@@ -257,7 +291,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return respond(409, { error: { code: 'CONFLICT', message: 'No remediation plan found' } });
     }
 
-    await recordApproval(investigationId, body.actionId, approver, body.note ?? null);
+    await recordApproval(investigationId, body.actionId, approver, body.note ?? null, approverEmail);
     const taskArn = await launchRemediationTask(investigationId, meta, remediation, approver);
 
     log('INFO', 'approval complete', { investigationId, taskArn });

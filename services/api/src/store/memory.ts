@@ -22,6 +22,12 @@ import { NotFoundError, type Store } from './types.js';
 export class MemoryStore implements Store {
   #workspaces = new Map<string, Workspace>();
   #repositories = new Map<string, Repository>();
+  #installations = new Map<string, number>(); // workspaceId → installationId
+  #oauthStates = new Map<string, { userId: string; expiresAt: number }>(); // state → {userId, expiresAt}
+  #githubUsers = new Map<
+    string,
+    { githubUserId: number; githubUsername: string; installationIds: number[] }
+  >(); // userId → GitHub user data
   #investigations = new Map<string, Investigation>();
   #events = new Map<string, InvestigationEvent[]>();
   #findings = new Map<string, Finding[]>();
@@ -46,6 +52,9 @@ export class MemoryStore implements Store {
   }
 
   async createRepository(repository: Repository): Promise<Repository> {
+    // Idempotency: return existing if same workspace+fullName
+    const existing = await this.getRepositoryByFullName(repository.fullName);
+    if (existing && existing.workspaceId === repository.workspaceId) return existing;
     this.#repositories.set(repository.id, repository);
     return repository;
   }
@@ -54,8 +63,54 @@ export class MemoryStore implements Store {
     return this.#repositories.get(id) ?? null;
   }
 
+  async getRepositoryByFullName(fullName: string): Promise<Repository | null> {
+    for (const repo of this.#repositories.values()) {
+      if (repo.fullName === fullName) return repo;
+    }
+    return null;
+  }
+
   async listRepositories(workspaceId: string): Promise<Repository[]> {
     return [...this.#repositories.values()].filter((r) => r.workspaceId === workspaceId);
+  }
+
+  async saveWorkspaceInstallation(workspaceId: string, installationId: number): Promise<void> {
+    this.#installations.set(workspaceId, installationId);
+  }
+
+  async getWorkspaceInstallation(workspaceId: string): Promise<number | null> {
+    return this.#installations.get(workspaceId) ?? null;
+  }
+
+  async saveOAuthState(state: string, userId: string, ttlSeconds = 600): Promise<void> {
+    this.#oauthStates.set(state, { userId, expiresAt: Date.now() + ttlSeconds * 1000 });
+  }
+
+  async getOAuthState(state: string): Promise<string | null> {
+    const entry = this.#oauthStates.get(state);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.#oauthStates.delete(state);
+      return null;
+    }
+    return entry.userId;
+  }
+
+  async deleteOAuthState(state: string): Promise<void> {
+    this.#oauthStates.delete(state);
+  }
+
+  async saveGitHubUser(
+    userId: string,
+    data: { githubUserId: number; githubUsername: string; installationIds: number[] },
+  ): Promise<void> {
+    this.#githubUsers.set(userId, data);
+  }
+
+  async getGitHubUser(
+    userId: string,
+  ): Promise<{ githubUserId: number; githubUsername: string; installationIds: number[] } | null> {
+    return this.#githubUsers.get(userId) ?? null;
   }
 
   async createInvestigation(investigation: Investigation): Promise<Investigation> {

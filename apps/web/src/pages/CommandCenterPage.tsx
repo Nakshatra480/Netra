@@ -1,28 +1,49 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { Investigation } from '@netra/domain';
+import { motion } from 'framer-motion';
+import type { Investigation, Repository } from '@netra/domain';
+import { FolderPlus, GitCommitHorizontal, PlayCircle, Search } from 'lucide-react';
 import {
-  AlertOctagon,
-  CheckCircle2,
-  Clock,
-  GitBranch,
-  GitCommitHorizontal,
-  PlayCircle,
-  Search,
-  XCircle,
-} from 'lucide-react';
-import { Button, EmptyState, Mono, Panel, PanelHeader, Skeleton } from '@/components/primitives';
+  Button,
+  EmptyState,
+  ErrorState,
+  Mono,
+  PageHeading,
+  Panel,
+  Section,
+  Skeleton,
+  StaggerList,
+  Stat,
+  staggerItem,
+} from '@/components/primitives';
+import { LoadingState, RepositorySkeleton } from '@/components/loading';
 import { SeverityBadge, StatusBadge } from '@/components/status';
 import { api, ApiError, type Session } from '@/lib/api';
-import { cn } from '@/lib/cn';
+import { loadClaims } from '@/lib/session';
 
-/** Where a returning user starts: what is open, and what needs a decision. */
+const ACTIVE_STATUSES = [
+  'RECEIVED', 'CREATED', 'PREPARING', 'INVESTIGATING', 'EVIDENCE_COLLECTION',
+  'VERIFYING', 'IMPACT_ANALYSIS', 'RECOMMENDATION', 'REMEDIATING', 'POST_FIX_VERIFY',
+];
+
+/**
+ * Dashboard.
+ *
+ * Answers three questions in order: what needs me, what is running, and what
+ * have we looked at. Numbers appear only where they are counts of real records
+ * — there are no invented metrics and no decorative charts.
+ */
 export function CommandCenterPage({ session }: { session: Session }) {
   const navigate = useNavigate();
   const { investigations, loading, error, reload } = useInvestigations(session);
+  const { repositories, loading: reposLoading } = useRepositories(session);
   const [starting, setStarting] = useState(false);
 
-  const start = async () => {
+  const isDemo = session.scheme === 'demo';
+  const claims = isDemo ? null : loadClaims();
+  const firstName = claims?.name?.split(' ')[0] ?? claims?.email?.split('@')[0] ?? null;
+
+  const startDemo = async () => {
     setStarting(true);
     try {
       const investigation = await api.startDemoInvestigation(session);
@@ -33,186 +54,233 @@ export function CommandCenterPage({ session }: { session: Session }) {
   };
 
   const awaiting = investigations.filter((i) => i.status === 'AWAITING_APPROVAL');
-  const active = investigations.filter(
-    (i) => !['RESOLVED', 'REJECTED', 'FAILED', 'AWAITING_APPROVAL'].includes(i.status),
-  );
-  const terminal = investigations.filter((i) =>
-    ['RESOLVED', 'REJECTED', 'FAILED'].includes(i.status),
-  );
+  const active = investigations.filter((i) => ACTIVE_STATUSES.includes(i.status));
+  const resolved = investigations.filter((i) => i.status === 'RESOLVED');
 
-  const statusLine =
-    awaiting.length > 0
-      ? `${awaiting.length} investigation${awaiting.length === 1 ? '' : 's'} need your decision`
-      : active.length > 0
-        ? `${active.length} investigation${active.length === 1 ? '' : 's'} in progress`
-        : 'No active investigations';
+  // The headline states the one thing worth knowing right now.
+  const headline = awaiting.length
+    ? `${awaiting.length} investigation${awaiting.length === 1 ? '' : 's'} need your decision`
+    : active.length
+      ? `${active.length} investigation${active.length === 1 ? '' : 's'} in progress`
+      : investigations.length
+        ? 'Nothing needs your attention'
+        : 'No investigations yet';
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
-      {/* Page header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Command Center</h1>
-          <p className="mt-1 text-sm text-[--color-ink-muted]">{statusLine}</p>
-        </div>
-        <Button variant="primary" onClick={() => void start()} disabled={starting}>
-          <PlayCircle size={15} />
-          {starting ? 'Starting…' : 'Investigate a change'}
-        </Button>
-      </div>
+    <div className="space-y-10">
+      <PageHeading
+        eyebrow={firstName ? `Welcome back, ${firstName}` : 'Overview'}
+        title={headline}
+        description={
+          repositories.length
+            ? `Monitoring ${repositories.length} repositor${repositories.length === 1 ? 'y' : 'ies'}.`
+            : 'Connect a repository and Netra will investigate every change that lands on it.'
+        }
+        actions={
+          <>
+            {isDemo ? (
+              <Button variant="secondary" onClick={() => void startDemo()} disabled={starting}>
+                <PlayCircle size={15} />
+                {starting ? 'Starting…' : 'Run demo investigation'}
+              </Button>
+            ) : null}
+            <Button variant="primary" onClick={() => navigate('/app/projects/new')}>
+              <FolderPlus size={15} />
+              Create project
+            </Button>
+          </>
+        }
+      />
 
-      {/* Awaiting approval — most urgent, shown first */}
-      {awaiting.length > 0 ? (
-        <Panel className="overflow-hidden border-2 border-[color-mix(in_oklch,var(--color-state-review)_45%,transparent)]">
-          <PanelHeader
-            title="Awaiting your decision"
-            subtitle={`${awaiting.length} need${awaiting.length === 1 ? 's' : ''} approval`}
-            icon={<AlertOctagon size={15} className="text-[--color-state-review]" />}
-          />
-          <ul className="divide-y divide-[--color-line]">
-            {awaiting.map((inv) => (
-              <InvestigationRow key={inv.id} investigation={inv} />
-            ))}
-          </ul>
-        </Panel>
-      ) : null}
-
-      {/* Active investigations */}
-      {active.length > 0 ? (
-        <Panel className="overflow-hidden">
-          <PanelHeader
-            title="Active"
-            subtitle="Currently being investigated"
-            icon={<Clock size={15} />}
-          />
-          <ul className="divide-y divide-[--color-line]">
-            {active.map((inv) => (
-              <InvestigationRow key={inv.id} investigation={inv} />
-            ))}
-          </ul>
-        </Panel>
-      ) : null}
-
-      {/* All investigations */}
-      <Panel className="overflow-hidden">
-        <PanelHeader
-          title="All investigations"
-          subtitle="Most recent first"
-          icon={<Search size={15} />}
-        />
-        {loading ? (
-          <div className="space-y-2 p-4">
-            {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-14 w-full" />
-            ))}
+      {/* Counts, not analytics: each is a count of records on this page. */}
+      {investigations.length > 0 ? (
+        <motion.div
+          {...{ initial: { opacity: 0, y: 6 }, animate: { opacity: 1, y: 0 } }}
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          className="grid grid-cols-2 gap-px overflow-hidden rounded-panel border border-line bg-line sm:grid-cols-4"
+        >
+          <div className="bg-tint-peach px-5 py-4">
+            <Stat label="Need a decision" value={awaiting.length} tone={awaiting.length ? 'review' : 'neutral'} />
           </div>
+          <div className="bg-tint-yellow px-5 py-4">
+            <Stat label="In progress" value={active.length} />
+          </div>
+          <div className="bg-tint-sage px-5 py-4">
+            <Stat label="Resolved" value={resolved.length} tone={resolved.length ? 'resolved' : 'neutral'} />
+          </div>
+          <div className="bg-surface px-5 py-4">
+            <Stat label="Repositories" value={reposLoading ? '—' : repositories.length} />
+          </div>
+        </motion.div>
+      ) : null}
+
+      {/* Decisions first: the only thing on this page that is blocking a person. */}
+      {awaiting.length > 0 ? (
+        <Section
+          title="Waiting for you"
+          description="Netra has finished investigating and proposed a fix. Nothing changes until you approve it."
+        >
+          <StaggerList className="space-y-2">
+            {awaiting.map((investigation) => (
+              <InvestigationRow key={investigation.id} investigation={investigation} emphasis />
+            ))}
+          </StaggerList>
+        </Section>
+      ) : null}
+
+      <Section
+        title="Repositories"
+        description={repositories.length ? undefined : 'Nothing connected yet.'}
+        actions={
+          repositories.length ? (
+            <Button size="sm" variant="ghost" onClick={() => navigate('/app/projects/new')}>
+              Add repository
+            </Button>
+          ) : null
+        }
+      >
+        {reposLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-14 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </div>
+        ) : repositories.length === 0 ? (
+          <Panel>
+            <EmptyState
+              icon={<FolderPlus size={18} />}
+              title="No repositories connected"
+              description="Create a project to connect a GitHub repository. Netra investigates each change that lands on it."
+              action={
+                <Button variant="primary" onClick={() => navigate('/app/projects/new')}>
+                  Create project
+                </Button>
+              }
+            />
+          </Panel>
+        ) : (
+          <StaggerList className="grid gap-2 sm:grid-cols-2">
+            {repositories.map((repo) => (
+              <motion.div key={repo.id} variants={staggerItem}>
+                <Link
+                  to={`/app/repositories/${repo.id}`}
+                  className="panel flex items-center justify-between gap-3 px-4 py-3.5 transition-colors duration-150 hover:border-line-strong"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-[0.9375rem] font-medium text-ink">
+                      {repo.fullName}
+                    </p>
+                    <p className="mt-0.5 text-[0.8125rem] text-ink-muted">
+                      <Mono>{repo.defaultBranch}</Mono>
+                      {repo.monitoringEnabled ? ' · monitored' : ' · paused'}
+                    </p>
+                  </div>
+                </Link>
+              </motion.div>
+            ))}
+          </StaggerList>
+        )}
+      </Section>
+
+      <Section
+        title="Investigations"
+        description={investigations.length ? 'Most recent first.' : undefined}
+      >
+        {loading ? (
+          <LoadingState label="Loading investigations…">
+            <RepositorySkeleton rows={3} />
+          </LoadingState>
         ) : error ? (
-          <EmptyState
+          <ErrorState
             title="Could not load investigations"
-            description={error}
+            detail={error}
             action={
-              <Button variant="secondary" onClick={() => void reload()}>
+              <Button size="sm" variant="secondary" onClick={() => void reload()}>
                 Try again
               </Button>
             }
           />
         ) : investigations.length === 0 ? (
-          <EmptyState
-            title="No investigations yet"
-            description="Start one against the demo repository to see the whole loop: evidence, blast radius, verification and approval."
-            action={
-              <Button variant="primary" onClick={() => void start()}>
-                Investigate a change
-              </Button>
-            }
-          />
+          <Panel>
+            <EmptyState
+              icon={<Search size={18} />}
+              title="No investigations yet"
+              description={
+                isDemo
+                  ? 'Run the demo investigation to see the whole loop: findings, evidence, verification and approval.'
+                  : 'Once a repository is connected, every push and pull request is investigated automatically.'
+              }
+              action={
+                isDemo ? (
+                  <Button variant="primary" onClick={() => void startDemo()} disabled={starting}>
+                    {starting ? 'Starting…' : 'Run demo investigation'}
+                  </Button>
+                ) : (
+                  <Button variant="primary" onClick={() => navigate('/app/projects/new')}>
+                    Create project
+                  </Button>
+                )
+              }
+            />
+          </Panel>
         ) : (
-          <ul className="divide-y divide-[--color-line]">
-            {investigations.map((inv) => (
-              <InvestigationRow key={inv.id} investigation={inv} />
+          <StaggerList className="space-y-2">
+            {investigations.map((investigation) => (
+              <InvestigationRow key={investigation.id} investigation={investigation} />
             ))}
-          </ul>
+          </StaggerList>
         )}
-      </Panel>
+      </Section>
     </div>
   );
 }
 
-function InvestigationRow({ investigation }: { investigation: Investigation }) {
-  const isResolved = investigation.status === 'RESOLVED';
-  const isFailed = investigation.status === 'FAILED';
-  const isRejected = investigation.status === 'REJECTED';
-
+/**
+ * One investigation, as a row.
+ *
+ * The summary is the important part, so it gets the width; identifiers and
+ * status sit either side of it.
+ */
+function InvestigationRow({
+  investigation,
+  emphasis = false,
+}: {
+  investigation: Investigation;
+  emphasis?: boolean;
+}) {
   return (
-    <li>
+    <motion.div variants={staggerItem}>
       <Link
         to={`/app/investigations/${investigation.id}`}
-        className="group flex flex-wrap items-start gap-x-4 gap-y-2 px-4 py-3.5 transition-colors hover:bg-[--color-surface-raised]"
+        className={
+          emphasis
+            ? 'panel block border-accent-border bg-accent-soft px-4 py-3.5 transition-colors duration-150 hover:border-accent'
+            : 'panel block px-4 py-3.5 transition-colors duration-150 hover:border-line-strong'
+        }
       >
-        {/* Status icon */}
-        <div className="mt-0.5 shrink-0">
-          {isResolved ? (
-            <CheckCircle2 size={15} className="text-[--color-state-resolved]" />
-          ) : isFailed || isRejected ? (
-            <XCircle size={15} className="text-[--color-state-severe]" />
-          ) : (
-            <div className="relative flex h-[15px] w-[15px] items-center justify-center">
-              <div className="h-2 w-2 rounded-full bg-[--color-state-active]" />
-              <div className="absolute inset-0 animate-ping rounded-full bg-[--color-state-active] opacity-30" />
-            </div>
-          )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Mono className="text-ink-muted">{investigation.reference}</Mono>
+          <span className="text-[0.8125rem] text-ink-subtle">
+            {investigation.change.repositoryFullName}
+          </span>
+          <span className="ml-auto flex items-center gap-2">
+            {investigation.severity ? <SeverityBadge severity={investigation.severity} /> : null}
+            <StatusBadge status={investigation.status} />
+          </span>
         </div>
-
-        {/* Main content */}
-        <div className="min-w-0 flex-1 space-y-1">
-          {/* Title row */}
-          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-            <Mono className="text-[0.68rem] text-[--color-ink-subtle]">
-              {investigation.reference}
-            </Mono>
-            <span className="truncate text-sm font-medium text-[--color-ink]">
-              {investigation.summary ?? investigation.change.title}
-            </span>
-          </div>
-
-          {/* Meta row */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-            <span className="text-[0.7rem] text-[--color-ink-subtle]">
-              {investigation.change.repositoryFullName}
-            </span>
-            {investigation.change.branch ? (
-              <span className="flex items-center gap-1 text-[0.68rem] text-[--color-ink-subtle]">
-                <GitBranch size={10} />
-                <Mono>{investigation.change.branch}</Mono>
-              </span>
-            ) : null}
-            <span className="flex items-center gap-1 text-[0.68rem] text-[--color-ink-subtle]">
-              <GitCommitHorizontal size={11} />
-              <Mono>{investigation.change.commitSha.slice(0, 8)}</Mono>
-            </span>
-            <span
-              className={cn(
-                'text-[0.68rem]',
-                isResolved ? 'text-[--color-state-resolved]' : 'text-[--color-ink-subtle]',
-              )}
-            >
-              {formatTimeAgo(investigation.startedAt)}
-            </span>
-          </div>
-        </div>
-
-        {/* Badges */}
-        <div className="flex shrink-0 items-center gap-2">
-          {investigation.severity ? (
-            <SeverityBadge severity={investigation.severity} />
+        <p className="mt-2 text-[0.9375rem] leading-snug text-ink">
+          {investigation.summary ?? investigation.change.title}
+        </p>
+        <p className="mt-1.5 flex items-center gap-1.5 text-[0.8125rem] text-ink-subtle">
+          <GitCommitHorizontal size={13} />
+          <Mono>{investigation.change.commitSha.slice(0, 8)}</Mono>
+          {investigation.change.pullRequestNumber ? (
+            <span>· PR #{investigation.change.pullRequestNumber}</span>
           ) : null}
-          <StatusBadge status={investigation.status} />
-        </div>
+        </p>
       </Link>
-    </li>
+    </motion.div>
   );
 }
-
 export function useInvestigations(session: Session) {
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -232,8 +300,6 @@ export function useInvestigations(session: Session) {
 
   useEffect(() => {
     void reload();
-    // The list only changes when the user acts, so it is loaded on mount rather
-    // than polled; individual investigations stream their own updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.workspaceId]);
 
@@ -254,3 +320,22 @@ function formatTimeAgo(isoString: string): string {
     return '';
   }
 }
+
+/** Loads connected repositories for the authenticated workspace. */
+export function useRepositories(session: Session) {
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (session.scheme === 'demo') return;
+    setLoading(true);
+    api
+      .listRepositories(session)
+      .then((repos) => setRepositories(repos))
+      .catch(() => setRepositories([]))
+      .finally(() => setLoading(false));
+  }, [session]);
+
+  return { repositories, loading };
+}
+

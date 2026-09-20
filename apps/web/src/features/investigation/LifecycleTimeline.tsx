@@ -99,8 +99,8 @@ export function LifecycleTimeline({
                     className={cn(
                       'absolute right-1/2 top-[11px] h-px w-[calc(50%+24px)] -translate-y-1/2',
                       stepState === 'done' || stepState === 'active'
-                        ? 'bg-[--color-state-active] opacity-40'
-                        : 'bg-[--color-line]',
+                        ? 'bg-state-active opacity-40'
+                        : 'bg-line',
                     )}
                     aria-hidden
                   />
@@ -111,8 +111,8 @@ export function LifecycleTimeline({
                     className={cn(
                       'absolute left-1/2 top-[11px] h-px w-[calc(50%+24px)] -translate-y-1/2',
                       stepState === 'done'
-                        ? 'bg-[--color-state-active] opacity-40'
-                        : 'bg-[--color-line]',
+                        ? 'bg-state-active opacity-40'
+                        : 'bg-line',
                     )}
                     aria-hidden
                   />
@@ -123,15 +123,15 @@ export function LifecycleTimeline({
                   className={cn(
                     'relative z-10 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border transition-colors duration-300',
                     stepState === 'done' &&
-                      'border-[--color-state-resolved] bg-[color-mix(in_oklch,var(--color-state-resolved)_18%,transparent)] text-[--color-state-resolved]',
+                      'border-state-resolved bg-[color-mix(in_oklch,var(--color-state-resolved)_18%,transparent)] text-state-resolved',
                     stepState === 'active' && !isTerminalBad &&
-                      'border-[--color-state-active] bg-[color-mix(in_oklch,var(--color-state-active)_15%,transparent)] text-[--color-state-active]',
+                      'border-state-active bg-[color-mix(in_oklch,var(--color-state-active)_15%,transparent)] text-state-active',
                     stepState === 'active' && isTerminalBad &&
-                      'border-[--color-state-severe] bg-[color-mix(in_oklch,var(--color-state-severe)_15%,transparent)] text-[--color-state-severe]',
+                      'border-state-severe bg-[color-mix(in_oklch,var(--color-state-severe)_15%,transparent)] text-state-severe',
                     stepState === 'pending' &&
-                      'border-[--color-line] text-[--color-ink-subtle]',
+                      'border-line text-ink-subtle',
                     isHumanDecision && stepState === 'active' && !isTerminalBad &&
-                      'border-[--color-state-review] bg-[color-mix(in_oklch,var(--color-state-review)_15%,transparent)] text-[--color-state-review]',
+                      'border-state-review bg-[color-mix(in_oklch,var(--color-state-review)_15%,transparent)] text-state-review',
                     stepState === 'active' &&
                       !isTerminalBad &&
                       'timeline-node-active',
@@ -161,11 +161,11 @@ export function LifecycleTimeline({
               <span
                 className={cn(
                   'px-1 text-center text-[0.6rem] leading-tight tracking-wide transition-colors',
-                  stepState === 'done' && 'text-[--color-ink-muted]',
-                  stepState === 'active' && !isTerminalBad && !isHumanDecision && 'font-semibold text-[--color-state-active]',
-                  stepState === 'active' && isHumanDecision && !isTerminalBad && 'font-semibold text-[--color-state-review]',
-                  stepState === 'active' && isTerminalBad && 'font-semibold text-[--color-state-severe]',
-                  stepState === 'pending' && 'text-[--color-ink-subtle]',
+                  stepState === 'done' && 'text-ink-muted',
+                  stepState === 'active' && !isTerminalBad && !isHumanDecision && 'font-semibold text-state-active',
+                  stepState === 'active' && isHumanDecision && !isTerminalBad && 'font-semibold text-state-review',
+                  stepState === 'active' && isTerminalBad && 'font-semibold text-state-severe',
+                  stepState === 'pending' && 'text-ink-subtle',
                 )}
               >
                 {isTerminalBad && stepState === 'active'

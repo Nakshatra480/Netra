@@ -168,5 +168,11 @@ class TestApprovalAndRemediation:
         # The same check that proved the exposure must now fail to find it.
         assert result["status"] == "REFUTED"
         assert result["phase"] == "POST_FIX"
+        # The record must say which commits it compared, so a reader can tell
+        # that RESOLVED was earned against the fixed tree and not the original.
+        assert result["preFixSha"] == base
+        assert result["postFixSha"] == applied.commit_sha
+        assert result["checkId"]
+        assert result["findingId"] == outcome.finding["id"]
         statuses = [e["status"] for e in events if e["type"] == "status_changed"]
         assert statuses == ["POST_FIX_VERIFY", "RESOLVED"]

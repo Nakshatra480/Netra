@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -12,6 +12,7 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import type { BlastRadiusGraph, GraphNodeKind } from '@netra/domain';
 import {
@@ -84,40 +85,40 @@ function ArtifactNode({ data, selected }: NodeProps<Node<NodeData>>) {
     <div
       className={cn(
         'group flex w-[186px] items-start gap-2.5 rounded-lg border px-3 py-2.5 transition-all duration-200',
-        'bg-[--color-surface] border-[--color-line]',
+        'bg-surface border-line',
         data.onAffectedPath && 'border-[color-mix(in_oklch,var(--color-state-severe)_50%,transparent)]',
         isFinding &&
-          'bg-[color-mix(in_oklch,var(--color-state-severe)_14%,var(--color-surface))] border-[--color-state-severe]',
+          'bg-[color-mix(in_oklch,var(--color-state-severe)_14%,var(--color-surface))] border-state-severe',
         isSecret &&
           'bg-[color-mix(in_oklch,var(--color-state-review)_12%,var(--color-surface))] border-[color-mix(in_oklch,var(--color-state-review)_55%,transparent)]',
-        selected && 'ring-2 ring-[--color-state-active] ring-offset-2 ring-offset-[--color-surface-sunken]',
+        selected && 'ring-2 ring-state-active ring-offset-2 ring-offset-surface-sunken',
         data.dimmed && 'opacity-25',
       )}
     >
-      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-0 !bg-[--color-line-strong]" />
+      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-0 !bg-line-strong" />
       <Icon
         size={15}
         className={cn(
           'mt-0.5 shrink-0',
-          isFinding && 'text-[--color-state-severe]',
-          isSecret && 'text-[--color-state-review]',
-          !isFinding && !isSecret && 'text-[--color-ink-subtle]',
+          isFinding && 'text-state-severe',
+          isSecret && 'text-state-review',
+          !isFinding && !isSecret && 'text-ink-subtle',
         )}
       />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[0.78rem] font-medium leading-tight text-[--color-ink]" title={data.label}>
+        <p className="truncate text-[0.78rem] font-medium leading-tight text-ink" title={data.label}>
           {data.label}
         </p>
-        <p className="mt-0.5 truncate text-[0.66rem] uppercase tracking-[0.06em] text-[--color-ink-subtle]">
+        <p className="mt-0.5 truncate text-[0.66rem] uppercase tracking-[0.06em] text-ink-subtle">
           {KIND_LABEL[data.kind]}
         </p>
         {data.evidenceCount > 0 ? (
-          <p className="mt-1 text-[0.66rem] text-[--color-state-active]">
+          <p className="mt-1 text-[0.66rem] text-state-active">
             {data.evidenceCount} evidence item{data.evidenceCount === 1 ? '' : 's'}
           </p>
         ) : null}
       </div>
-      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-[--color-line-strong]" />
+      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-line-strong" />
     </div>
   );
 }
@@ -141,10 +142,23 @@ export function BlastRadius({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
+  // `fitView` as a prop only runs once, on mount. The graph arrives later —
+  // the page polls for it — so by the time there are nodes to frame, the
+  // viewport has already been set for an empty canvas and the artifacts sit
+  // outside it. Holding the instance lets the view be re-fitted whenever the
+  // visible set changes, which is also what makes the affected-path filter
+  // look like it did something.
+  const flowRef = useRef<ReactFlowInstance<Node<NodeData>, Edge> | null>(null);
+
   useEffect(() => {
     if (!layout) return;
     setNodes(layout.nodes);
     setEdges(layout.edges);
+    // After React has committed the new nodes, not before.
+    const frame = requestAnimationFrame(() => {
+      flowRef.current?.fitView({ padding: 0.18, duration: 220 });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [layout, setNodes, setEdges]);
 
   // Selecting evidence highlights the artifact it refers to, so the two panels
@@ -188,6 +202,16 @@ export function BlastRadius({
             variant={affectedOnly ? 'primary' : 'ghost'}
             onClick={() => setAffectedOnly((v) => !v)}
             aria-pressed={affectedOnly}
+            // With nothing on the affected path this filter can only empty the
+            // canvas, which reads as a broken control rather than an answer.
+            disabled={affectedCount === 0}
+            title={
+              affectedCount === 0
+                ? 'Nothing is on the affected path in this investigation'
+                : affectedOnly
+                  ? 'Show every artifact'
+                  : 'Show only what the change can reach'
+            }
           >
             <Filter size={13} />
             Affected path
@@ -196,6 +220,10 @@ export function BlastRadius({
       />
       <div className="relative min-h-0 flex-1">
         <ReactFlow
+          onInit={(instance) => {
+            flowRef.current = instance;
+            instance.fitView({ padding: 0.18 });
+          }}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
@@ -210,24 +238,24 @@ export function BlastRadius({
           nodesDraggable
           nodesConnectable={false}
         >
-          <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="oklch(0.3 0.01 260)" />
+          <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="var(--color-line-strong)" />
           <Controls
             showInteractive={false}
-            className="!border-[--color-line] !bg-[--color-surface] [&>button]:!border-[--color-line] [&>button]:!bg-[--color-surface] [&>button]:!fill-[--color-ink-muted] hover:[&>button]:!bg-[--color-surface-raised]"
+            className="!border-line !bg-surface [&>button]:!border-line [&>button]:!bg-surface [&>button]:!fill-ink-muted hover:[&>button]:!bg-surface-raised"
           />
           <MiniMap
             pannable
             zoomable
-            className="!border !border-[--color-line] !bg-[--color-surface-sunken]"
-            maskColor="oklch(0.14 0.008 260 / 0.75)"
+            className="!border !border-line !bg-surface-sunken"
+            maskColor="rgba(248,250,252,0.75)"
             nodeColor={(node) =>
-              (node.data as NodeData).onAffectedPath ? 'oklch(0.65 0.19 22)' : 'oklch(0.42 0.015 260)'
+              (node.data as NodeData).onAffectedPath ? 'var(--color-state-severe)' : 'var(--color-ink-subtle)'
             }
           />
         </ReactFlow>
       </div>
       {/* The graph is not the only way to read this: the same conclusion in prose. */}
-      <p className="border-t border-[--color-line] px-4 py-2.5 text-xs leading-relaxed text-[--color-ink-muted]">
+      <p className="border-t border-line px-4 py-2.5 text-xs leading-relaxed text-ink-muted">
         {graph.summary}
       </p>
     </section>
@@ -303,11 +331,11 @@ function toFlow(graph: BlastRadiusGraph, affectedOnly: boolean) {
       label: edge.relationship,
       animated: edge.onAffectedPath,
       style: {
-        stroke: edge.onAffectedPath ? 'oklch(0.65 0.19 22)' : 'oklch(0.42 0.015 260)',
+        stroke: edge.onAffectedPath ? 'var(--color-state-severe)' : 'var(--color-line-strong)',
         strokeWidth: edge.onAffectedPath ? 1.75 : 1,
       },
-      labelStyle: { fill: 'oklch(0.74 0.012 260)', fontSize: 10.5, fontFamily: 'Inter' },
-      labelBgStyle: { fill: 'oklch(0.17 0.008 260)', fillOpacity: 0.9 },
+      labelStyle: { fill: 'var(--color-ink-muted)', fontSize: 10.5, fontFamily: 'Inter' },
+      labelBgStyle: { fill: '#F8FAFC', fillOpacity: 0.92 },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 3,
     }));

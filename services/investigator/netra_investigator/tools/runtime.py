@@ -19,6 +19,7 @@ from ..sandbox import CommandDenied, CommandResult, DockerSandbox
 from ..sandbox.allowlist import (
     SandboxCommand,
     find_references,
+    git_changed_file_stats,
     git_changed_files,
     git_diff,
     git_log,
@@ -49,6 +50,10 @@ class Match:
 class ChangedFile:
     path: str
     change_type: str
+    #: Lines added and removed, as git counted them. None for a binary file,
+    #: where "how many lines changed" has no answer — distinct from zero.
+    additions: int | None = None
+    deletions: int | None = None
 
 
 @dataclass(slots=True)
@@ -111,7 +116,13 @@ class InvestigationTools:
         return self._execute(git_diff(self._base_sha, self._head_sha, path)).stdout
 
     def changed_files(self) -> list[ChangedFile]:
-        """List the files this change touched."""
+        """List the files this change touched, with how much each one moved.
+
+        Two git invocations because one cannot answer both questions:
+        `--name-status` gives the kind of change, `--numstat` gives the size of
+        it. They are keyed together by path.
+        """
+        stats = self._changed_line_counts()
         result = self._execute(git_changed_files(self._base_sha, self._head_sha))
         changed: list[ChangedFile] = []
         for line in result.stdout_lines():
@@ -119,13 +130,39 @@ class InvestigationTools:
             if len(parts) < 2:
                 continue
             status = parts[0][0]
+            path = normalize_path(parts[-1])
+            added, removed = stats.get(path, (None, None))
             changed.append(
                 ChangedFile(
-                    path=normalize_path(parts[-1]),
+                    path=path,
                     change_type=_CHANGE_TYPES.get(status, "MODIFIED"),
+                    additions=added,
+                    deletions=removed,
                 )
             )
         return changed
+
+    def _changed_line_counts(self) -> dict[str, tuple[int | None, int | None]]:
+        """Added/removed line counts per path, from `git diff --numstat`."""
+        counts: dict[str, tuple[int | None, int | None]] = {}
+        try:
+            result = self._execute(git_changed_file_stats(self._base_sha, self._head_sha))
+        except Exception:  # noqa: BLE001
+            # Line counts are detail, not evidence. If git will not produce
+            # them the investigation still has everything it needs.
+            return counts
+
+        for line in result.stdout_lines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            added, removed, path = parts[0], parts[1], parts[-1]
+            counts[normalize_path(path)] = (
+                # "-" means binary: not zero, but unanswerable.
+                int(added) if added.isdigit() else None,
+                int(removed) if removed.isdigit() else None,
+            )
+        return counts
 
     def search_repository(self, query: str, path: str = ".") -> list[Match]:
         """Search the repository for a literal string."""

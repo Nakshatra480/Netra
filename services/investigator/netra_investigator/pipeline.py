@@ -48,6 +48,9 @@ class InvestigationOutcome:
     status: str
     summary: str | None = None
     severity: str | None = None
+    #: The files this change touched, with measured line counts. Persisted so
+    #: the report can describe the change without re-reading the repository.
+    changed_files: list[dict[str, Any]] = field(default_factory=list)
     finding: dict[str, Any] | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
     verifications: list[dict[str, Any]] = field(default_factory=list)
@@ -96,6 +99,19 @@ def run_investigation(
         logger.exception("investigation failed", extra={"investigation": request.investigation_id})
         emitter.status_changed("FAILED", reason)
         return InvestigationOutcome(status="FAILED", failure_reason=reason)
+
+
+def _changed_files_payload(tools: InvestigationTools) -> list[dict[str, Any]]:
+    """The changed-file list in the shape the API and report expect."""
+    return [
+        {
+            "path": c.path,
+            "changeType": c.change_type,
+            "additions": c.additions,
+            "deletions": c.deletions,
+        }
+        for c in tools.changed_files()
+    ]
 
 
 def _run(
@@ -312,6 +328,7 @@ def _recommend_phase(
             status="RESOLVED",
             summary=summary,
             severity="INFO",
+            changed_files=_changed_files_payload(tools),
             graph=graph,
             model_used=not hypothesis.model_unavailable,
             model_metadata=hypothesis.to_metadata(),
@@ -331,6 +348,7 @@ def _recommend_phase(
             status="RESOLVED",
             summary=summary,
             severity=finding["severity"],
+            changed_files=_changed_files_payload(tools),
             finding=finding,
             evidence=evidence,
             verifications=[verification] if verification else [],
@@ -363,6 +381,7 @@ def _recommend_phase(
         status="AWAITING_APPROVAL",
         summary=summary,
         severity=finding["severity"],
+        changed_files=_changed_files_payload(tools),
         finding=finding,
         evidence=evidence,
         verifications=[verification] if verification else [],

@@ -150,7 +150,7 @@ export function InvestigationTerminal({
           ) : null
         }
       />
-      <div className="relative min-h-0 flex-1 bg-[--color-surface-sunken]">
+      <div className="relative min-h-0 flex-1 bg-surface-sunken">
         <div
           ref={hostRef}
           className="absolute inset-0 px-3 py-2"
@@ -159,7 +159,7 @@ export function InvestigationTerminal({
           aria-label="Investigation command output"
         />
         {commands.length === 0 ? (
-          <p className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-[--color-ink-subtle]">
+          <p className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-ink-subtle">
             Commands appear here as the sandbox runs them.
           </p>
         ) : null}

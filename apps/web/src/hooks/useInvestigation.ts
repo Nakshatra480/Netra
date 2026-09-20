@@ -51,6 +51,11 @@ export interface InvestigationState {
 
 const TERMINAL_STATUSES: InvestigationStatus[] = ['RESOLVED', 'REJECTED', 'FAILED'];
 
+/** How often a running investigation is re-read from the backend. */
+const POLL_INTERVAL_MS = 2500;
+/** Ceiling for the error backoff, so a long outage still recovers promptly. */
+const MAX_BACKOFF_MS = 30_000;
+
 /**
  * Subscribes to one investigation.
  *
@@ -69,8 +74,14 @@ export function useInvestigation(session: Session | null, investigationId: strin
     setState((current) => reduce(current, event));
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!session || !investigationId) return;
+  // One request at a time. Polling every couple of seconds over a slow link
+  // would otherwise stack up requests and apply their answers out of order.
+  const inFlight = useRef(false);
+
+  const refresh = useCallback(async (): Promise<boolean> => {
+    if (!session || !investigationId) return false;
+    if (inFlight.current) return false;
+    inFlight.current = true;
     try {
       const detail = await api.getInvestigation(session, investigationId);
       setState((current) => ({
@@ -87,12 +98,16 @@ export function useInvestigation(session: Session | null, investigationId: strin
         loading: false,
         error: null,
       }));
+      return true;
     } catch (error) {
       setState((current) => ({
         ...current,
         loading: false,
         error: error instanceof ApiError ? error.message : 'Could not load the investigation.',
       }));
+      return false;
+    } finally {
+      inFlight.current = false;
     }
   }, [session, investigationId]);
 
@@ -151,11 +166,58 @@ export function useInvestigation(session: Session | null, investigationId: strin
   }, [session, investigationId, state.status, applyEvent, refresh]);
 
 
-  // Once an investigation reaches a terminal state, reconcile with the store so
-  // anything the stream missed is still shown.
+  /**
+   * Poll the investigation record while it is still running.
+   *
+   * The record in DynamoDB is the source of truth for progress. The event
+   * stream cannot be relied on for it: in the deployed setup the API runs
+   * behind a buffering Lambda, so an SSE response is not delivered until the
+   * handler returns, and the Fargate task that writes the events is a
+   * different process from the one holding the subscription. Asking the
+   * backend on a timer is what actually keeps the page current.
+   *
+   * Stops only at a real terminal state, so a slow investigation is followed
+   * for as long as it takes rather than being abandoned on a guess.
+   */
+  const isTerminal = Boolean(state.status && TERMINAL_STATUSES.includes(state.status));
+
   useEffect(() => {
-    if (state.status && TERMINAL_STATUSES.includes(state.status)) void refresh();
-  }, [state.status, refresh]);
+    if (!session || !investigationId) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Grows only while the API is failing, and resets on the first success, so
+    // an outage backs off instead of hammering a struggling backend.
+    let failures = 0;
+
+    const tick = async () => {
+      if (cancelled) return;
+      const ok = await refresh();
+      if (cancelled) return;
+      failures = ok ? 0 : failures + 1;
+      schedule();
+    };
+
+    const schedule = () => {
+      if (cancelled) return;
+      const delay =
+        failures === 0 ? POLL_INTERVAL_MS : Math.min(POLL_INTERVAL_MS * 2 ** failures, MAX_BACKOFF_MS);
+      timer = setTimeout(() => void tick(), delay);
+    };
+
+    if (isTerminal) {
+      // One last read, so anything written alongside the final status — the
+      // findings, the evidence, the pull request — is reconciled and shown.
+      void refresh();
+      return;
+    }
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [session, investigationId, isTerminal, refresh]);
 
   const evidenceByFinding = useMemo(() => {
     const map = new Map<string, Evidence[]>();

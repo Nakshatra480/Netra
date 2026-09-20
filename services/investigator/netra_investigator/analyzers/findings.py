@@ -208,6 +208,8 @@ def build_verification(
     duration_ms: int,
     phase: str = "PRE_FIX",
     command: str | None = None,
+    pre_fix_sha: str | None = None,
+    post_fix_sha: str | None = None,
 ) -> dict[str, Any]:
     """Record the deterministic check's verdict.
 
@@ -237,13 +239,20 @@ def build_verification(
     return {
         "id": new_id("vrf"),
         "findingId": finding_id,
+        # `verifier` is the human-readable name; `checkId` is the stable
+        # identifier a reader can match against the analyzer that produced it.
         "verifier": VERIFIER_ID,
+        "checkId": VERIFIER_ID,
         "status": status,
         "claim": claim,
         "detail": detail,
         "command": command,
         "durationMs": duration_ms,
         "phase": phase,
+        # The commits the check ran against. Without these, a verification
+        # cannot be tied to the code it actually examined.
+        "preFixSha": pre_fix_sha,
+        "postFixSha": post_fix_sha,
         "createdAt": _now(),
     }
 
