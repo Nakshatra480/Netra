@@ -340,9 +340,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       // Bind state to the Cognito userId server-side, expires in 10 minutes
       await store.saveOAuthState(state, identity.userId, 600);
 
-      // The callback URL must match what is registered in the GitHub App settings
-      const origin = (request.headers.origin as string | undefined) ?? 'http://localhost:5173';
-      const callbackUrl = `${origin}/auth/github-callback`;
+      // The callback URL must match what is registered in the GitHub App settings.
+      // On the S3 REST endpoint (*.s3.region.amazonaws.com), /auth/github-callback
+      // doesn't exist as a real object — use /index.html instead (main.tsx rewrites
+      // the route before React mounts, same pattern as the Cognito callback).
+      const rawOrigin = (request.headers.origin as string | undefined) ?? 'http://localhost:5173';
+      const origin = rawOrigin.replace(/\/+$/, '');
+      const isS3Rest = /\.s3\.[^.]+\.amazonaws\.com$/.test(new URL(origin).hostname);
+      const callbackPath = isS3Rest ? '/index.html' : '/auth/github-callback';
+      const callbackUrl = `${origin}${callbackPath}`;
 
       return reply.send({ state, clientId, callbackUrl });
     } catch (error) {

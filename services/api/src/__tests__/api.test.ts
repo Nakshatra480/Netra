@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { CompositeVerifier } from '../auth/identity.js';
 import { loadConfig } from '../config.js';
 import { buildServer } from '../server.js';
 import { MemoryStore } from '../store/memory.js';
@@ -219,5 +220,62 @@ describe('workspace provisioning', () => {
   it('requires authentication', async () => {
     const response = await app.inject({ method: 'POST', url: '/api/workspaces/mine' });
     expect(response.statusCode).toBe(401);
+  });
+
+  describe('GitHub OAuth state endpoint', () => {
+    it('returns exact S3 index.html redirect_uri when origin is production S3 REST host', async () => {
+      const testConfig = loadConfig({
+        NODE_ENV: 'test',
+        NETRA_DEMO_SESSION_SECRET: 'test-secret-value-for-signing-demo-sessions',
+        NETRA_GITHUB_APP_SECRET: JSON.stringify({ appId: '4992979', privateKey: 'test-key' }),
+      });
+      const mockVerifier = {
+        verifyAuthorizationHeader: async () => ({ kind: 'COGNITO' as const, userId: 'test-cognito-user-1' }),
+      } as unknown as CompositeVerifier;
+
+      const testApp = await buildServer({ config: testConfig, store, verifier: mockVerifier });
+
+      const prodOrigin = 'https://netra-prod-web-421946397122.s3.eu-north-1.amazonaws.com';
+      const response = await testApp.inject({
+        method: 'POST',
+        url: '/api/github/oauth/state',
+        headers: {
+          authorization: 'Bearer valid-cognito-token',
+          origin: prodOrigin,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const data = response.json();
+      expect(data.callbackUrl).toBe('https://netra-prod-web-421946397122.s3.eu-north-1.amazonaws.com/index.html');
+      expect(data.clientId).toBe('Iv23li3GiM6S5vRNuCaH');
+      expect(data.state).toHaveLength(64);
+    });
+
+    it('returns localhost callbackUrl when origin is localhost', async () => {
+      const testConfig = loadConfig({
+        NODE_ENV: 'test',
+        NETRA_DEMO_SESSION_SECRET: 'test-secret-value-for-signing-demo-sessions',
+        NETRA_GITHUB_APP_SECRET: JSON.stringify({ appId: '4992979', privateKey: 'test-key' }),
+      });
+      const mockVerifier = {
+        verifyAuthorizationHeader: async () => ({ kind: 'COGNITO' as const, userId: 'test-cognito-user-1' }),
+      } as unknown as CompositeVerifier;
+
+      const testApp = await buildServer({ config: testConfig, store, verifier: mockVerifier });
+
+      const response = await testApp.inject({
+        method: 'POST',
+        url: '/api/github/oauth/state',
+        headers: {
+          authorization: 'Bearer valid-cognito-token',
+          origin: 'http://localhost:5173',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const data = response.json();
+      expect(data.callbackUrl).toBe('http://localhost:5173/auth/github-callback');
+    });
   });
 });

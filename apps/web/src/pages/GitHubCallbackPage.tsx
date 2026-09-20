@@ -67,7 +67,14 @@ export function GitHubCallbackPage({ session }: Props) {
 
     // ── Case 2: New OAuth flow — code + state present
     if (code && oauthState) {
-      const redirectUri = `${window.location.origin}/auth/github-callback`;
+      // On the S3 REST endpoint (*.s3.region.amazonaws.com), the backend used
+      // /index.html as the callback URL (real S3 object). Use the same value
+      const hostname = window.location.hostname ?? (window.location.origin ? new URL(window.location.origin).hostname : '');
+      const isS3Rest = /\.s3\.[^.]+\.amazonaws\.com$/.test(hostname);
+      const origin = (window.location.origin ?? '').replace(/\/+$/, '');
+      const redirectUri = isS3Rest
+        ? `${origin}/index.html`
+        : `${origin}/auth/github-callback`;
 
       api
         .exchangeGitHubOAuth(session, { code, state: oauthState, redirectUri })

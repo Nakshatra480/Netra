@@ -12,6 +12,7 @@ import type { Store } from './store/types.js';
 export interface BuildOptions {
   config?: Config;
   store?: Store;
+  verifier?: CompositeVerifier;
 }
 
 /**
@@ -28,7 +29,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
       ? new DynamoStore(config.tableName, config.awsRegion)
       : new MemoryStore());
   const broker = new EventBroker();
-  const verifier = CompositeVerifier.create(config);
+  const verifier = options.verifier ?? CompositeVerifier.create(config);
   const service = new InvestigationService(store, broker, config);
 
   const app = Fastify({

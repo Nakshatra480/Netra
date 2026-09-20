@@ -412,22 +412,24 @@ function decodeJwtSegment(segment: string): string {
 // ─── URL helpers ─────────────────────────────────────────────────────────────
 
 function callbackUri(): string {
-  const { origin, hostname } = window.location;
+  const { origin } = window.location;
+  const hostname = window.location.hostname ?? (origin ? new URL(origin).hostname : '');
   // On the S3 REST endpoint (*.s3.region.amazonaws.com), only real object
   // keys can be fetched — there is no SPA fallback for /auth/callback.
   // Use /index.html as the redirect_uri instead; main.tsx will detect the
   // code+state params and push history to /auth/callback before React mounts.
-  if (hostname.match(/\.s3\.[^.]+\.amazonaws\.com$/)) {
+  if (/\.s3\.[^.]+\.amazonaws\.com$/.test(hostname)) {
     return `${origin}/index.html`;
   }
   return `${origin}/auth/callback`;
 }
 
 function signOutUri(): string {
-  const { origin, hostname } = window.location;
+  const { origin } = window.location;
+  const hostname = window.location.hostname ?? (origin ? new URL(origin).hostname : '');
   // On the S3 REST endpoint, bare / is a bucket listing → AccessDenied.
   // Use /index.html so Cognito's logout redirect lands on a real S3 object.
-  if (hostname.match(/\.s3\.[^.]+\.amazonaws\.com$/)) {
+  if (/\.s3\.[^.]+\.amazonaws\.com$/.test(hostname)) {
     return `${origin}/index.html`;
   }
   return `${origin}/`;
