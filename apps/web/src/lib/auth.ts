@@ -412,7 +412,14 @@ function decodeJwtSegment(segment: string): string {
 // ─── URL helpers ─────────────────────────────────────────────────────────────
 
 function callbackUri(): string {
-  const origin = window.location.origin;
+  const { origin, hostname } = window.location;
+  // On the S3 REST endpoint (*.s3.region.amazonaws.com), only real object
+  // keys can be fetched — there is no SPA fallback for /auth/callback.
+  // Use /index.html as the redirect_uri instead; main.tsx will detect the
+  // code+state params and push history to /auth/callback before React mounts.
+  if (hostname.match(/\.s3\.[^.]+\.amazonaws\.com$/)) {
+    return `${origin}/index.html`;
+  }
   return `${origin}/auth/callback`;
 }
 
