@@ -35,21 +35,26 @@ export const COGNITO_POOL_ID = USER_POOL_ID;
 
 
 // ─── HTTP → HTTPS redirect for production ────────────────────────────────────
-// crypto.subtle requires a secure context (HTTPS). The S3 website endpoint
-// is HTTP-only, but the S3 REST endpoint serves the same files over HTTPS.
-// Redirect immediately so the user never gets a broken sign-in page.
+// crypto.subtle requires a secure context (HTTPS). The S3 website endpoint is
+// HTTP-only; the S3 REST endpoint serves the same files over HTTPS but does
+// NOT serve index.html for missing paths (no SPA fallback). So we redirect
+// to /index.html directly and encode the original path in a query param so the
+// app can restore it after mounting.
 if (
   typeof window !== 'undefined' &&
   window.location.protocol === 'http:' &&
   window.location.hostname.includes('s3-website')
 ) {
-  // e.g. http://netra-prod-web-…s3-website.eu-north-1.amazonaws.com
-  //   → https://netra-prod-web-…s3.eu-north-1.amazonaws.com
-  const httpsUrl = window.location.href
-    .replace('http://', 'https://')
-    .replace('.s3-website.', '.s3.');
-  window.location.replace(httpsUrl);
+  const { hostname, pathname, search } = window.location;
+  // http://netra-prod-web-…s3-website.eu-north-1.amazonaws.com
+  //   → https://netra-prod-web-…s3.eu-north-1.amazonaws.com/index.html?__redirect=/original/path
+  const httpsHost = hostname.replace('.s3-website.', '.s3.');
+  const originalPath = encodeURIComponent(pathname + search);
+  window.location.replace(
+    `https://${httpsHost}/index.html?__redirect=${originalPath}`,
+  );
 }
+
 
 // ─── PKCE helpers ───────────────────────────────────────────────────────────
 
