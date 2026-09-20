@@ -424,5 +424,11 @@ function callbackUri(): string {
 }
 
 function signOutUri(): string {
-  return `${window.location.origin}/`;
+  const { origin, hostname } = window.location;
+  // On the S3 REST endpoint, bare / is a bucket listing → AccessDenied.
+  // Use /index.html so Cognito's logout redirect lands on a real S3 object.
+  if (hostname.match(/\.s3\.[^.]+\.amazonaws\.com$/)) {
+    return `${origin}/index.html`;
+  }
+  return `${origin}/`;
 }

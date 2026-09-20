@@ -3,27 +3,54 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './index.css';
 
-// ── S3 SPA path restoration ───────────────────────────────────────────────────
-// Two scenarios handled before React mounts, both caused by the S3 REST
-// endpoint having no SPA fallback (only real object keys are served):
+// ── S3 REST endpoint SPA routing ──────────────────────────────────────────────
+// The S3 REST endpoint serves only real object keys.  Paths like /app,
+// /signin, /auth/callback don't exist as objects → AccessDenied.
+// /index.html IS a real object → always safe to load.
 //
-// 1. HTTP→HTTPS redirect: auth.ts sends the user to
-//    /index.html?__redirect=/original/path  — restore the path.
+// We fix URL issues here, before React/BrowserRouter mount, so the router
+// always sees a valid route.
 //
-// 2. Cognito OAuth callback: callbackUri() uses /index.html on the S3 REST
-//    host so Cognito redirects to /index.html?code=...&state=...
-//    Reroute to /auth/callback with the same search params so
-//    AuthCallbackPage can exchange the code normally.
+// Cases handled:
+//   A. HTTP → HTTPS redirect from auth.ts:
+//      /index.html?__redirect=/some/path  → restore /some/path
+//      /index.html?__redirect=/           → stay at /  (BrowserRouter handles it)
+//
+//   B. Cognito OAuth callback:
+//      /index.html?code=…&state=…         → reroute to /auth/callback?code=…
+//      /index.html?error=…               → reroute to /auth/callback?error=…
+//
+//   C. Cognito logout redirect or bare bucket root:
+//      /index.html (no params)            → /  (landing page)
+//
+// After replaceState, BrowserRouter sees a normal path and renders correctly.
+// Client-side navigate() calls never reload the page, so no further S3
+// requests are made for non-existent paths.
 
 const sp = new URLSearchParams(window.location.search);
+const isS3Rest = window.location.hostname.match(/\.s3\.[^.]+\.amazonaws\.com$/);
 
-if (sp.get('__redirect')) {
-  // Scenario 1 — restore original path from our own HTTP→HTTPS redirect.
-  window.history.replaceState(null, '', decodeURIComponent(sp.get('__redirect')!));
-} else if (sp.get('code') || sp.get('error')) {
-  // Scenario 2 — Cognito callback landed on /index.html instead of
-  // /auth/callback because the S3 REST endpoint can't serve unknown paths.
-  window.history.replaceState(null, '', `/auth/callback${window.location.search}`);
+if (isS3Rest) {
+  const redirect = sp.get('__redirect');
+  const code = sp.get('code');
+  const error = sp.get('error');
+
+  if (redirect) {
+    // Case A: restore original path from our HTTP→HTTPS redirect.
+    // Decode and replaceState — BrowserRouter will pick up the correct route.
+    window.history.replaceState(null, '', decodeURIComponent(redirect));
+  } else if (code ?? error) {
+    // Case B: Cognito callback landed on /index.html (because /auth/callback
+    // is not a real S3 object).  Reroute so AuthCallbackPage sees it normally.
+    window.history.replaceState(
+      null,
+      '',
+      `/auth/callback${window.location.search}`,
+    );
+  }
+  // Case C: bare /index.html with no params — user got here from sign-out
+  // redirect or direct navigation.  Leave URL as-is; BrowserRouter will
+  // route '/' to the landing page.
 }
 
 const container = document.getElementById('root');
