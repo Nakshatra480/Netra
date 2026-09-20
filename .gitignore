@@ -46,3 +46,6 @@ openrouter_api.md
 # build artifacts
 services/webhook/dist/
 services/orchestrator/dist/
+services/api/dist/
+services/api/dist-lambda/
+services/api/dist-lambda-zip/
