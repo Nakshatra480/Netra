@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, LogOut } from 'lucide-react';
+import { Avatar } from '@/components/Avatar';
 import { cn } from '@/lib/cn';
 import type { Session } from '@/lib/api';
 import { loadClaims } from '@/lib/session';
@@ -73,20 +74,7 @@ export function AppShell({ session, children, onSignOut }: AppShellProps) {
           ) : null}
 
           <div className="flex items-center gap-2">
-            {avatarUrl ? (
-              <img
-                src={avatarUrl}
-                alt=""
-                className="h-7 w-7 rounded-full border border-line object-cover"
-              />
-            ) : (
-              <span
-                aria-hidden="true"
-                className="grid h-7 w-7 place-items-center rounded-full bg-surface-sunken text-[0.75rem] font-semibold text-ink-muted"
-              >
-                {avatarInitial}
-              </span>
-            )}
+            <Avatar src={avatarUrl} initial={avatarInitial} />
             {displayName ? (
               <span className="hidden max-w-[10rem] truncate text-[0.875rem] text-ink md:block">
                 {displayName}

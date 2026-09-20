@@ -17,6 +17,7 @@
  * Never put OAuth secrets here.
  */
 
+import { usableImageUrl } from '@/lib/imageUrl';
 const COGNITO_DOMAIN =
   import.meta.env.VITE_COGNITO_DOMAIN ??
   'https://netra-prod-auth.auth.eu-north-1.amazoncognito.com';
@@ -272,23 +273,40 @@ export interface IdTokenClaims {
  * never as proof of identity.
  */
 export function decodeIdToken(idToken: string): IdTokenClaims {
+  const empty: IdTokenClaims = { sub: '', email: null, name: null, picture: null };
   try {
     const parts = idToken.split('.');
     const payloadPart = parts[1];
-    if (!payloadPart) return { sub: '', email: null, name: null, picture: null };
-    const json = JSON.parse(atob(payloadPart.replace(/-/g, '+').replace(/_/g, '/'))) as Record<
-      string,
-      unknown
-    >;
+    if (!payloadPart) return empty;
+
+    const json = JSON.parse(decodeJwtSegment(payloadPart)) as Record<string, unknown>;
     return {
       sub: String(json.sub ?? ''),
       email: typeof json.email === 'string' ? json.email : null,
       name: typeof json.name === 'string' ? json.name : null,
-      picture: typeof json.picture === 'string' ? json.picture : null,
+      // Not every provider hands back a bare URL here. Validating once, on the
+      // way in, keeps an unusable value from reaching an <img src> later and
+      // rendering as a broken image.
+      picture: usableImageUrl(json.picture),
     };
   } catch {
-    return { sub: '', email: null, name: null, picture: null };
+    return empty;
   }
+}
+
+/**
+ * Decode one base64url JWT segment as UTF-8.
+ *
+ * `atob` alone returns a Latin-1 byte string, so any non-ASCII character in a
+ * name comes back mangled. Base64url also drops its padding, which `atob`
+ * rejects at some lengths.
+ */
+function decodeJwtSegment(segment: string): string {
+  const base64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────

@@ -225,3 +225,51 @@ describe('tokensToSession', () => {
     expect(JSON.stringify(session)).not.toContain('refresh-token');
   });
 });
+
+describe('decodeIdToken claim handling', () => {
+  /** Build an unsigned token with the given payload, as Cognito encodes it. */
+  function tokenWith(payload: Record<string, unknown>): string {
+    const body = Buffer.from(JSON.stringify(payload), 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    return `header.${body}.signature`;
+  }
+
+  it('keeps a normal Google picture URL', async () => {
+    const { decodeIdToken } = await import('@/lib/auth');
+    const url = 'https://lh3.googleusercontent.com/a/ACg8ocK=s96-c';
+    expect(decodeIdToken(tokenWith({ sub: 's', picture: url })).picture).toBe(url);
+  });
+
+  it('drops a picture claim that could not be used as an image source', async () => {
+    const { decodeIdToken } = await import('@/lib/auth');
+    // Storing these would put a broken image in the header on every page.
+    expect(decodeIdToken(tokenWith({ sub: 's', picture: 'null' })).picture).toBeNull();
+    expect(decodeIdToken(tokenWith({ sub: 's', picture: '' })).picture).toBeNull();
+    expect(decodeIdToken(tokenWith({ sub: 's' })).picture).toBeNull();
+  });
+
+  it('unwraps a picture claim a provider wrapped in JSON', async () => {
+    const { decodeIdToken } = await import('@/lib/auth');
+    const claims = decodeIdToken(
+      tokenWith({ sub: 's', picture: '{"data":{"url":"https://cdn.example/p.png"}}' }),
+    );
+    expect(claims.picture).toBe('https://cdn.example/p.png');
+  });
+
+  it('reads a non-ASCII name without mangling it', async () => {
+    const { decodeIdToken } = await import('@/lib/auth');
+    // atob alone returns Latin-1 bytes, which turns "José" into "JosÃ©".
+    expect(decodeIdToken(tokenWith({ sub: 's', name: 'José Ruiz' })).name).toBe('José Ruiz');
+    expect(decodeIdToken(tokenWith({ sub: 's', name: '中村さくら' })).name).toBe('中村さくら');
+  });
+
+  it('survives a malformed token instead of throwing', async () => {
+    const { decodeIdToken } = await import('@/lib/auth');
+    for (const bad of ['', 'not-a-token', 'a.b', 'a.!!!.c']) {
+      expect(decodeIdToken(bad).picture).toBeNull();
+    }
+  });
+});
