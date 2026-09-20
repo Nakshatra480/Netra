@@ -25,8 +25,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Github, Loader2, XCircle, AlertTriangle } from 'lucide-react';
+import { Github, XCircle, AlertTriangle } from 'lucide-react';
 import { api, ApiError, type Session } from '@/lib/api';
+import { PageLoader } from '@/components/PageLoader';
 
 interface Props {
   session: Session;
@@ -197,22 +198,5 @@ export function GitHubCallbackPage({ session }: Props) {
   }
 
   // ── Exchanging (loading)
-  return (
-    <div className="flex min-h-[60vh] items-center justify-center px-4">
-      <div className="mx-auto max-w-md space-y-4 text-center">
-        <div className="flex justify-center">
-          <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-surface-raised">
-            <Github size={24} className="text-ink-muted" />
-            <span className="absolute -right-1 -top-1">
-              <Loader2 size={16} className="animate-spin text-state-active" />
-            </span>
-          </div>
-        </div>
-        <h1 className="text-lg font-semibold">Verifying GitHub authorization…</h1>
-        <p className="text-sm text-ink-muted">
-          Identifying your GitHub account and loading your repositories.
-        </p>
-      </div>
-    </div>
-  );
+  return <PageLoader label="Verifying GitHub authorization…" sublabel="Identifying your account and loading repositories." />;
 }

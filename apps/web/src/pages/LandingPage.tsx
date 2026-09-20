@@ -72,8 +72,8 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
       </header>
 
       {/* ── Hero ── */}
-      <section className="border-b border-line bg-tint-peach">
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] lg:py-24">
+      <section className="flex min-h-[calc(100dvh-4rem)] flex-col border-b border-line bg-tint-peach">
+        <div className="mx-auto grid w-full max-w-6xl flex-1 items-center gap-12 px-6 py-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)]">
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}

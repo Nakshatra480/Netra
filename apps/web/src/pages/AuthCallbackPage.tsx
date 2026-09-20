@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ShieldHalf } from 'lucide-react';
+import { PageLoader } from '@/components/PageLoader';
+import { NetraLogoIcon } from '@/components/NetraLogo';
 import { handleCallback, decodeIdToken } from '@/lib/auth';
 import { api } from '@/lib/api';
 import {
@@ -78,31 +79,22 @@ export function AuthCallbackPage({
   if (error) {
     return (
       <div className="grid min-h-dvh place-items-center bg-canvas px-6">
-        <div className="w-full max-w-sm text-center">
-          <div className="mb-4 flex justify-center">
-            <ShieldHalf size={24} className="text-state-active" />
+        <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
+          <NetraLogoIcon size={64} />
+          <div>
+            <h1 className="text-[1.125rem] font-semibold text-ink">Sign-in failed</h1>
+            <p className="mt-2 text-[0.9375rem] leading-relaxed text-ink-muted">{error}</p>
           </div>
-          <h1 className="text-base font-semibold text-ink">Sign-in failed</h1>
-          <p className="mt-2 text-sm leading-relaxed text-ink-muted">{error}</p>
-          <div className="mt-6 flex justify-center gap-3">
-            <a
-              href="/signin"
-              className="rounded-lg bg-surface-raised px-4 py-2 text-sm font-medium text-ink hover:bg-line focus-visible:outline-2 focus-visible:outline-state-active"
-            >
-              Try again
-            </a>
-          </div>
+          <a
+            href="/signin"
+            className="rounded-control border border-line-strong bg-surface px-5 py-2.5 text-[0.9375rem] font-medium text-ink transition-colors hover:bg-surface-raised"
+          >
+            Try again
+          </a>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="grid min-h-dvh place-items-center bg-canvas">
-      <div className="flex flex-col items-center gap-4">
-        <ShieldHalf size={24} className="animate-pulse text-state-active" />
-        <p className="text-sm text-ink-muted">Completing sign-in…</p>
-      </div>
-    </div>
-  );
+  return <PageLoader label="Completing sign-in…" sublabel="Securing your session, just a moment." />;
 }
