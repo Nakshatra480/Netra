@@ -26,77 +26,49 @@ Nothing is simulated. Where a capability is unavailable, the UI says so rather t
 
 ```mermaid
 flowchart TD
-    GH["GitHub App<br/>push / pull_request"]
+    DEV([Developer pushes a commit]):::ext
+    GH([GitHub App]):::ext
 
-    subgraph Ingest["Ingest"]
-        APIGW1["API Gateway HTTP API<br/>webhook endpoint"]
-        WH["Lambda<br/>github-webhook<br/>HMAC verify"]
-        DDB1[("DynamoDB<br/>deliveries<br/>idempotency")]
-        EB["EventBridge<br/>Netra.CodeChange<br/>+ archive"]
-        DLQ["SQS<br/>dead-letter"]
-    end
+    WH["API Gateway → Lambda<br/>verify webhook signature"]:::aws
+    IDEM[("DynamoDB<br/>delivery idempotency")]:::data
+    EB["EventBridge<br/>Netra.CodeChange"]:::aws
+    SFN["Step Functions<br/>investigation workflow"]:::aws
+    ECS["ECS Fargate<br/>investigator sandbox<br/>clone · trace · verify"]:::aws
+    REC[("DynamoDB<br/>investigation record<br/>findings · evidence · graph")]:::data
+    API["API Gateway → Lambda<br/>read API"]:::aws
+    WEB["S3<br/>React app"]:::aws
 
-    subgraph Orchestrate["Orchestrate"]
-        SFN["Step Functions<br/>investigation workflow"]
-        L1["Lambda<br/>create-investigation"]
-        L2["Lambda<br/>confirm-outcome"]
-        L3["Lambda<br/>record-failure"]
-    end
+    GATE{"Human reviews<br/>the evidence"}:::human
+    STOP([Nothing is changed]):::ext
+    APPROVE["API Gateway → Lambda<br/>Cognito JWT required"]:::aws
+    FIX["ECS Fargate<br/>apply fix · open PR<br/>re-run the same check"]:::aws
+    PR([GitHub pull request]):::ext
+    DONE([Resolved]):::done
 
-    subgraph Analyze["Analyze"]
-        ECS["ECS Fargate task<br/>investigator<br/>sandboxed, allowlisted tools"]
-        ECR["ECR<br/>investigator image"]
-        SM["Secrets Manager<br/>GitHub App key"]
-    end
-
-    DDB2[("DynamoDB<br/>investigations<br/>META · FINDING# · EVIDENCE#<br/>VERIFY# · GRAPH · ACTION")]
-
-    subgraph Serve["Serve"]
-        APIGW2["API Gateway HTTP API<br/>read API"]
-        API["Lambda<br/>api (Fastify)"]
-        COG["Cognito<br/>Google sign-in"]
-        S3["S3<br/>React SPA"]
-    end
-
-    subgraph Remediate["Remediate — human gated"]
-        APIGW3["API Gateway HTTP API<br/>approval + Cognito JWT authorizer"]
-        APPROVE["Lambda<br/>approve-investigation"]
-        ECS2["ECS Fargate task<br/>remediate"]
-        PR["GitHub pull request"]
-    end
-
-    CW["CloudWatch<br/>logs · alarms"]
-
-    GH -->|"HMAC-signed delivery"| APIGW1 --> WH
-    WH --> DDB1
-    WH -->|"PutEvents"| EB
-    EB -.->|"on failure"| DLQ
-    EB -->|"rule"| SFN
-    SFN --> L1 --> DDB2
+    DEV --> GH
+    GH -->|HMAC-signed delivery| WH
+    WH -->|"first time only"| IDEM
+    WH --> EB
+    EB --> SFN
     SFN --> ECS
-    ECR -.->|"image pull"| ECS
-    SM -.->|"injected by ECS agent"| ECS
-    ECS -->|"status · events · evidence"| DDB2
-    ECS -->|"clone @ commit"| GH
-    SFN --> L2 --> DDB2
-    SFN -.->|"timeout / error"| L3 --> DDB2
+    ECS -->|"status · evidence, as it happens"| REC
+    REC --> API --> WEB
+    WEB --> GATE
+    GATE -->|reject| STOP
+    GATE -->|approve| APPROVE
+    APPROVE --> FIX
+    FIX --> PR
+    FIX -->|"post-fix check no longer finds it"| DONE
 
-    DDB2 --> API
-    APIGW2 --> API
-    S3 --> APIGW2
-    COG -.->|"ID / access token"| S3
-
-    S3 -->|"Approve"| APIGW3 --> APPROVE
-    COG -.->|"verifies JWT"| APIGW3
-    APPROVE -->|"guarded state transition"| DDB2
-    APPROVE -->|"RunTask"| ECS2
-    ECS2 -->|"opens"| PR
-    ECS2 -->|"POST_FIX verification"| DDB2
-
-    WH -.-> CW
-    ECS -.-> CW
-    SFN -.-> CW
+    classDef aws fill:#FFE8DC,stroke:#E8845A,stroke-width:1px,color:#111827
+    classDef data fill:#FFF4DC,stroke:#E0A94B,stroke-width:1px,color:#111827
+    classDef human fill:#DCEBBD,stroke:#7E9B4E,stroke-width:1.5px,color:#111827
+    classDef ext fill:#F1F2F4,stroke:#9AA1AC,stroke-width:1px,color:#111827
+    classDef done fill:#DCEBBD,stroke:#7E9B4E,stroke-width:1px,color:#111827
 ```
+
+*Green marks the human decision and the verified end state — no path reaches remediation without the first, and none reaches `Resolved` without the second. Every stage writes to the investigation record as it goes, which is what the UI polls. Supporting services (ECR, Secrets Manager, SQS, CloudWatch) are in the table below rather than drawn, to keep the main path readable.*
+
 
 ### AWS services used
 
