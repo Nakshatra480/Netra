@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, LogOut, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, LogOut } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { Session } from '@/lib/api';
 import { loadClaims } from '@/lib/session';
 import { signOut } from '@/lib/auth';
+import { NetraLogoMark } from '@/components/NetraLogo';
 
 /**
  * The application shell.
@@ -38,10 +39,7 @@ export function AppShell({ session, children, onSignOut }: AppShellProps) {
     <div className="flex min-h-dvh flex-col bg-canvas">
       <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-4 border-b border-line bg-surface px-4 sm:px-6">
         <NavLink to="/app" className="flex select-none items-center gap-2.5">
-          <span className="grid h-7 w-7 place-items-center rounded-control bg-accent">
-            <ShieldCheck size={15} className="text-[#7C2D12]" strokeWidth={2.5} />
-          </span>
-          <span className="text-[1rem] font-bold tracking-tight text-ink">Netra</span>
+          <NetraLogoMark size={28} />
         </NavLink>
 
         {/*

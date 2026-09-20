@@ -12,6 +12,7 @@ import {
 import { api, ApiError, type Session } from '@/lib/api';
 import { saveSession } from '@/lib/session';
 import { Button, ErrorState } from '@/components/primitives';
+import { NetraLogoMark } from '@/components/NetraLogo';
 
 /**
  * Landing page.
@@ -63,10 +64,7 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
     <div className="min-h-dvh bg-canvas">
       <header className="sticky top-0 z-20 border-b border-line bg-surface/95">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-2.5 px-6">
-          <span className="grid h-8 w-8 place-items-center rounded-control bg-accent">
-            <ShieldCheck size={16} className="text-[#7C2D12]" strokeWidth={2.5} />
-          </span>
-          <span className="text-[1.0625rem] font-bold tracking-tight">Netra</span>
+          <NetraLogoMark size={30} />
           <Button variant="ghost" size="sm" className="ml-auto" onClick={() => navigate('/signin')}>
             Sign in
           </Button>

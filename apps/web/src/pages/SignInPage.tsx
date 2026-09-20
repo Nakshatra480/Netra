@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { beginGoogleSignIn, cognitoConfigured } from '@/lib/auth';
 import { api, ApiError, type Session } from '@/lib/api';
 import { saveSession } from '@/lib/session';
 import { Button, ErrorState } from '@/components/primitives';
+import { NetraLogoMark } from '@/components/NetraLogo';
+
 
 /**
  * Sign in.
@@ -74,10 +76,7 @@ export function SignInPage({ onSession }: { onSession: (session: Session) => voi
             onClick={() => navigate('/')}
             className="flex items-center gap-2.5 rounded-control px-1 py-1 transition-colors hover:opacity-80"
           >
-            <span className="grid h-8 w-8 place-items-center rounded-control bg-accent">
-              <ShieldCheck size={16} className="text-[#7C2D12]" strokeWidth={2.5} />
-            </span>
-            <span className="text-[1.0625rem] font-bold tracking-tight">Netra</span>
+            <NetraLogoMark size={30} />
           </button>
           <Button variant="ghost" size="sm" className="ml-auto" onClick={() => navigate('/')}>
             <ArrowLeft size={14} />
