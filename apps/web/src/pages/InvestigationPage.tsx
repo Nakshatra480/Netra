@@ -65,24 +65,6 @@ export function InvestigationPage({ session }: { session: Session }) {
   const [approveNote, setApproveNote] = useState('');
   const [approveError, setApproveError] = useState<string | null>(null);
 
-  const DEMO_PR_URL = 'https://github.com/Nakshatra480/netra-e2e-test/pull/3';
-  const isDemo =
-    session.scheme === 'demo' ||
-    Boolean(state.detail?.investigation?.isDemo) ||
-    Boolean(id?.startsWith('inv_demo'));
-
-  // ── Demo mode live remediation pipeline states ──
-  const [demoStatus, setDemoStatus] = useState<InvestigationStatus | null>(null);
-  const [demoActivities, setDemoActivities] = useState<ActivityItem[]>([]);
-  const demoAbortRef = useRef(false);
-
-  useEffect(() => {
-    demoAbortRef.current = false;
-    return () => {
-      demoAbortRef.current = true;
-    };
-  }, []);
-
   const approve = useCallback(
     async (note?: string) => {
       if (!id || !state.action) return;
@@ -109,148 +91,14 @@ export function InvestigationPage({ session }: { session: Session }) {
   /**
    * Approve the remediation.
    *
-   * In Demo Mode:
-   * Runs the complete remediation pipeline live in the terminal (git checkout,
-   * diff application, branch creation, commit, post-fix verification, and PR creation),
-   * then redirects directly to https://github.com/Nakshatra480/netra-e2e-test/pull/3.
-   *
-   * In Production:
-   * Calls the approval pipeline, transitions the record under a condition,
-   * and launches the remediation ECS task.
+   * There is one path, and the demo takes it too. Approval transitions the
+   * record under a condition and launches the remediation task; the pull
+   * request, its branch and its commit are whatever GitHub actually returns,
+   * read back from the investigation record. Nothing here predicts or
+   * constructs them.
    */
   const handleApprove = async () => {
     if (approveBusy) return;
-
-    if (isDemo) {
-      setApproveError(null);
-      setTerminalOpen(true);
-      setApproveBusy(true);
-
-      const demoSteps: Array<{
-        status: InvestigationStatus;
-        delayMs: number;
-        activity: { message: string; state: 'STARTED' | 'COMPLETED' };
-      }> = [
-        {
-          status: 'AWAITING_APPROVAL',
-          delayMs: 200,
-          activity: {
-            message: 'Approval confirmed: launching remediation pipeline for Nakshatra480/netra-e2e-test',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'REMEDIATING',
-          delayMs: 450,
-          activity: {
-            message: 'Checking out target repository: Nakshatra480/netra-e2e-test @ 3027994a61cb',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'REMEDIATING',
-          delayMs: 500,
-          activity: {
-            message: 'Applying approved remediation patch: reverting client credential exposure',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'REMEDIATING',
-          delayMs: 450,
-          activity: {
-            message: 'Removed PAYMENT_SERVICE_API_KEY and STRIPE_SECRET_KEY from browser bundle',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'REMEDIATING',
-          delayMs: 500,
-          activity: {
-            message: 'Created remediation branch: netra/remediation/inv_demo3027994a61cb',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'REMEDIATING',
-          delayMs: 450,
-          activity: {
-            message: 'Committed and pushed fix commit f1b63e8 to origin',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'POST_FIX_VERIFY',
-          delayMs: 550,
-          activity: {
-            message: 'Running post-fix verification: secret-flow-v1 on commit f1b63e8',
-            state: 'STARTED',
-          },
-        },
-        {
-          status: 'POST_FIX_VERIFY',
-          delayMs: 600,
-          activity: {
-            message: 'AST taint analysis: walking import graph from browser entry points',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'POST_FIX_VERIFY',
-          delayMs: 500,
-          activity: {
-            message: '0 credential exposures detected — verified claim: "No credential reaches the browser bundle."',
-            state: 'COMPLETED',
-          },
-        },
-        {
-          status: 'RESOLVED',
-          delayMs: 600,
-          activity: {
-            message: 'Opening pull request on GitHub: Nakshatra480/netra-e2e-test',
-            state: 'STARTED',
-          },
-        },
-        {
-          status: 'RESOLVED',
-          delayMs: 550,
-          activity: {
-            message: `Pull request created successfully: ${DEMO_PR_URL}`,
-            state: 'COMPLETED',
-          },
-        },
-      ];
-
-      setDemoActivities([]);
-      setDemoStatus('AWAITING_APPROVAL');
-
-      for (let i = 0; i < demoSteps.length; i++) {
-        const step = demoSteps[i]!;
-        await new Promise((r) => setTimeout(r, step.delayMs));
-        if (demoAbortRef.current) return;
-
-        setDemoStatus(step.status);
-        setDemoActivities((prev) => [
-          ...prev,
-          {
-            id: `demo_act_${i}_${Date.now()}`,
-            message: step.activity.message,
-            state: step.activity.state,
-            at: new Date().toISOString(),
-          },
-        ]);
-      }
-
-      setApproveBusy(false);
-
-      // Allow the visitor to inspect the completed terminal state, then redirect to GitHub PR
-      await new Promise((r) => setTimeout(r, 1400));
-      if (demoAbortRef.current) return;
-
-      window.location.href = DEMO_PR_URL;
-      return;
-    }
-
     if (state.action?.status !== 'PENDING') return;
 
     setApproveError(null);
@@ -269,16 +117,17 @@ export function InvestigationPage({ session }: { session: Session }) {
   };
 
   /*
-   * In non-demo mode: once the remediation task reports a pull request,
-   * move to the review page. In demo mode, the pipeline streams and redirects
-   * to the GitHub PR directly.
+   * Once the remediation task reports a pull request, move to the review page.
+   * The URL is whatever the backend persisted from GitHub's response — the
+   * page never builds one, so it cannot point at a pull request that the run
+   * did not create.
    */
-  const prUrl = isDemo ? DEMO_PR_URL : (state.action?.resultUrl ?? null);
+  const prUrl = state.action?.resultUrl ?? null;
   useEffect(() => {
-    if (isDemo || !prUrl || !terminalOpen || !id) return;
+    if (!prUrl || !terminalOpen || !id) return;
     const timer = setTimeout(() => navigate(`/app/investigations/${id}/pr`), 1200);
     return () => clearTimeout(timer);
-  }, [isDemo, prUrl, terminalOpen, id, navigate]);
+  }, [prUrl, terminalOpen, id, navigate]);
 
   const handleEditSubmit = async () => {
     if (!editPrompt.trim()) return;
@@ -312,31 +161,16 @@ export function InvestigationPage({ session }: { session: Session }) {
 
   const investigation = state.detail?.investigation;
   const finding = state.findings[0];
-  const effectiveStatus = isDemo && demoStatus ? demoStatus : state.status;
-  const effectiveActivities = isDemo && demoActivities.length > 0 ? demoActivities : state.activities;
-  const effectiveAction: Action | null = isDemo
-    ? {
-        ...(state.action ?? {
-          id: 'act_demo_remediation',
-          investigationId: id ?? 'inv_demo3027994a61cb',
-          type: 'CREATE_REMEDIATION_PR' as const,
-          requestedBy: 'netra-investigator',
-          approvedBy: null,
-          decisionNote: null,
-          decidedAt: null,
-          createdAt: new Date().toISOString(),
-        }),
-        status: (effectiveStatus === 'RESOLVED' ? 'APPROVED' : (demoStatus ? 'PENDING' : (state.action?.status ?? 'APPROVED'))) as Action['status'],
-        resultUrl: DEMO_PR_URL,
-      }
-    : state.action;
+  const effectiveStatus = state.status;
+  const effectiveActivities = state.activities;
+  const effectiveAction: Action | null = state.action;
 
   const isResolved = effectiveStatus === 'RESOLVED';
   const isFailed = effectiveStatus === 'FAILED';
   // While this is true the report is still being written, so regions that have
   // no data yet show what they are waiting for instead of a conclusion.
   const running = analysisRunning(effectiveStatus);
-  const resolvedPrUrl = isDemo ? DEMO_PR_URL : (state.action?.resultUrl ?? null);
+  const resolvedPrUrl = state.action?.resultUrl ?? null;
 
   const elapsed = (() => {
     if (!investigation?.startedAt) return null;
@@ -348,7 +182,7 @@ export function InvestigationPage({ session }: { session: Session }) {
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   })();
 
-  const canApprove = isDemo ? !approveBusy : (state.action?.status === 'PENDING');
+  const canApprove = state.action?.status === 'PENDING';
 
   return (
     <div className="min-h-full bg-canvas">
@@ -646,11 +480,9 @@ export function InvestigationPage({ session }: { session: Session }) {
                 <Terminal size={15} />
                 {approveBusy
                   ? 'Running remediation pipeline…'
-                  : isDemo && demoStatus === 'RESOLVED'
-                    ? 'Re-run Approval Pipeline'
-                    : terminalOpen && !isDemo
-                      ? 'Terminal open ↓'
-                      : 'Approve'}
+                  : terminalOpen
+                    ? 'Terminal open ↓'
+                    : 'Approve'}
               </button>
             </div>
 
@@ -1052,7 +884,7 @@ function BlastRadiusSection({ graph, evidence }: { graph: any; evidence: Evidenc
       <div className="h-[380px] overflow-hidden rounded-xl border border-line">
         {/* BlastRadius prints the graph's own summary beneath the canvas, so
             repeating it here showed the same sentence twice. */}
-        <BlastRadius graph={graph} selectedEvidenceFile={selectedFile} onSelectNode={setSelectedFile} />
+        <BlastRadius className="h-full" graph={graph} selectedEvidenceFile={selectedFile} onSelectNode={setSelectedFile} />
       </div>
     </div>
   );
@@ -1233,7 +1065,12 @@ function LiveTerminalPanel({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [activities.length, status]);
 
-  const reachedIndex = REMEDIATION_STAGES.findIndex((s) => s.status === status);
+  // A rejected approval leaves the record exactly where it was. Advancing the
+  // stage list on the strength of the *current* status would then announce
+  // "Approval received" directly beneath the message saying it was not — and
+  // leave three stages pending forever, which reads as a hung pipeline rather
+  // than a refusal the reader can act on.
+  const reachedIndex = error ? -1 : REMEDIATION_STAGES.findIndex((s) => s.status === status);
 
   return (
     <div className="border-t border-line">
@@ -1254,6 +1091,10 @@ function LiveTerminalPanel({
           ) : isTerminal ? (
             <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-900/60 px-2.5 py-0.5 text-[0.6rem] font-bold text-emerald-400">
               <Check size={10} strokeWidth={3} /> DONE
+            </span>
+          ) : error ? (
+            <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-amber-900/60 px-2.5 py-0.5 text-[0.6rem] font-bold text-amber-300">
+              <TriangleAlert size={10} /> NOT STARTED
             </span>
           ) : (
             <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-900/60 px-2.5 py-0.5 text-[0.6rem] font-bold text-emerald-400">
@@ -1277,13 +1118,16 @@ function LiveTerminalPanel({
             <p className="text-red-400">✗ Approval could not be submitted</p>
             <p className="pl-4 text-gray-400">{error}</p>
             <p className="pl-4 text-gray-500">
-              Nothing was changed. You can retry once the cause is resolved.
+              Nothing was changed. The investigation is still awaiting a decision.
             </p>
           </div>
         ) : null}
 
-        {/* Stages, marked from the status the backend actually reports. */}
-        <ol className="space-y-1.5">
+        {/* Stages, marked from the status the backend actually reports. They
+            are hidden entirely on a failed approval: a list of pending steps
+            under an error reads as a pipeline that stalled, when in fact
+            nothing was ever started. */}
+        <ol className={cn('space-y-1.5', error && 'hidden')}>
           {REMEDIATION_STAGES.map((stage, index) => {
             const done = reachedIndex > index || status === 'RESOLVED';
             const current = reachedIndex === index && !isTerminal;

@@ -10,7 +10,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { api, ApiError, type Session } from '@/lib/api';
-import { saveSession } from '@/lib/session';
+import { loadSession, saveSession } from '@/lib/session';
 import { Button, ErrorState } from '@/components/primitives';
 import { NetraLogoMark } from '@/components/NetraLogo';
 
@@ -43,10 +43,20 @@ export function LandingPage({ onSession }: { onSession: (session: Session) => vo
     setBusy(true);
     setError(null);
     try {
-      const { token, workspace } = await api.startDemoSession();
-      const session: Session = { token, scheme: 'demo', workspaceId: workspace.id };
-      saveSession(session);
-      onSession(session);
+      // Keep a signed-in session. Replacing it with a demo one would drop the
+      // Cognito token, and approving a remediation needs that token — so the
+      // one person who can authorise the demo's fix would be signed out of it
+      // by the act of starting it.
+      const existing = loadSession();
+      let session: Session;
+      if (existing?.scheme === 'bearer') {
+        session = existing;
+      } else {
+        const { token, workspace } = await api.startDemoSession();
+        session = { token, scheme: 'demo', workspaceId: workspace.id };
+        saveSession(session);
+        onSession(session);
+      }
 
       // A broken or unreachable fixture must surface here rather than
       // dropping the visitor on an investigation that will never fill in.

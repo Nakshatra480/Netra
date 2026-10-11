@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -253,12 +254,53 @@ def create_pull_request(
         # it must not replace the HTTP failure with a less useful one.
         body_text = ""
         with contextlib.suppress(Exception):
-            body_text = err.read().decode("utf-8", errors="replace")[:200]
+            body_text = err.read().decode("utf-8", errors="replace")[:500]
+
+        # GitHub answers 422 when a pull request already exists for this head
+        # branch. A retried remediation must adopt that pull request rather
+        # than fail or open a second one for the same fix.
+        if err.code == 422 and "already exists" in body_text:
+            existing = find_open_pull_request(token, full_name, head)
+            if existing:
+                logger.info("reusing existing pull request", extra={"pr_url": existing})
+                return existing
+
         raise GitHubUnavailable(
-            f"GitHub refused PR creation (HTTP {err.code}): {body_text}"
+            f"GitHub refused PR creation (HTTP {err.code}): {body_text[:200]}"
         ) from None
     except (urllib.error.URLError, TimeoutError) as err:
         raise GitHubUnavailable(f"GitHub could not be reached: {err}") from None
+
+
+def find_open_pull_request(token: str, full_name: str, head: str) -> str | None:
+    """The open pull request for a head branch, if one is already there.
+
+    Used only to make a retried remediation idempotent: the branch is named
+    after the investigation, so an existing pull request for it is this
+    investigation's own, not someone else's work.
+    """
+    owner = full_name.split("/")[0]
+    query = urllib.parse.urlencode({"head": f"{owner}:{head}", "state": "open", "per_page": "1"})
+    request = urllib.request.Request(  # noqa: S310 – fixed https GitHub endpoint
+        f"{GITHUB_API}/repos/{full_name}/pulls?{query}",
+        method="GET",
+        headers={
+            "authorization": f"Bearer {token}",
+            "accept": "application/vnd.github+json",
+            "user-agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            data = json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError):
+        # Best effort. The caller still reports the original failure.
+        return None
+
+    if isinstance(data, list) and data:
+        url = data[0].get("html_url")
+        return str(url) if url else None
+    return None
 
 
 def _has_commit(repo: Path, commit: str) -> bool:

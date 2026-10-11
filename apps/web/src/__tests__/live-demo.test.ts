@@ -96,3 +96,36 @@ describe('runDemo', () => {
     await expect(api.runDemo(session)).rejects.toThrow(/fixture repository needs to be restored/);
   });
 });
+
+describe('repeat runs of the demo', () => {
+  /**
+   * The fixture commit never changes, so an id derived from it alone gave one
+   * investigation for all time: once it finished, the demo could only replay
+   * its old result and its old pull request. The run number advances past a
+   * finished run so the demo can actually be demonstrated again.
+   */
+  const idFor = (sha: string, run: number) => {
+    const delivery = run === 1 ? `demo-${sha.slice(0, 12)}` : `demo-${sha.slice(0, 12)}-r${run}`;
+    return `inv_${delivery.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+  };
+  const SHA = '3027994a61cbdf3717134ec66db4a89c090045fa';
+
+  it('gives each run its own investigation', () => {
+    expect(idFor(SHA, 1)).toBe('inv_demo3027994a61cb');
+    expect(idFor(SHA, 2)).toBe('inv_demo3027994a61cbr2');
+    expect(new Set([1, 2, 3, 10, 99].map((n) => idFor(SHA, n))).size).toBe(5);
+  });
+
+  it('keeps every id inside the identifier budget', () => {
+    // investigationIdFor truncates to 24 characters; a collision there would
+    // silently merge two runs into one record.
+    for (const run of [1, 2, 10, 100, 200]) {
+      expect(idFor(SHA, run).length).toBeLessThanOrEqual(28);
+    }
+  });
+
+  it('is stable for a given run, so two clicks converge', () => {
+    // The id depends on stored state, not on when the button was pressed.
+    expect(idFor(SHA, 4)).toBe(idFor(SHA, 4));
+  });
+});

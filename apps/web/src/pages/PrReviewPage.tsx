@@ -41,13 +41,10 @@ export function PrReviewPage({ session }: { session: Session }) {
   const investigation = state.detail?.investigation;
   const remediation = state.remediation;
   const action = state.action;
-  const isDemo =
-    session.scheme === 'demo' ||
-    Boolean(state.detail?.investigation?.isDemo) ||
-    Boolean(id?.startsWith('inv_demo'));
-  const prUrl = isDemo
-    ? 'https://github.com/Nakshatra480/netra-e2e-test/pull/3'
-    : (action?.resultUrl ?? null);
+  // The pull request Netra actually opened, as the remediation task recorded
+  // it from GitHub's response. There is no demo variant: a link that was not
+  // produced by this investigation would point at someone else's work.
+  const prUrl = action?.resultUrl ?? null;
 
   const diffStats = useMemo(() => summarizeDiff(remediation?.diff ?? ''), [remediation?.diff]);
   const postFix = state.verifications.find((v) => v.phase === 'POST_FIX');

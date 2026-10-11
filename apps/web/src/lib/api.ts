@@ -191,7 +191,8 @@ export const api = {
     if (session.scheme !== 'bearer') {
       throw new ApiError(
         'UNAUTHENTICATED',
-        'Approving a remediation requires a signed-in account. The demo session cannot open pull requests.',
+        'Approving a remediation opens a real pull request, so it needs a signed-in account. ' +
+          'Sign in with Google and start the demo again to approve this fix.',
         401,
       );
     }

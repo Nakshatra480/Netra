@@ -288,3 +288,57 @@ describe('failure reasons a person can act on', () => {
     );
   });
 });
+
+describe('confirming an outcome that a human already approved', () => {
+  /**
+   * The investigator writes AWAITING_APPROVAL and exits; the workflow runs
+   * ConfirmOutcome a moment later. A reviewer who approves inside that window
+   * moves the record on before the check reads it. Treating that as an
+   * incomplete investigation failed a remediation that was already running.
+   */
+  it('accepts REMEDIATING instead of failing the investigation', async () => {
+    const { handler } = await import('../confirmOutcome.js');
+    const store = await import('../store.js');
+    vi.spyOn(store, 'getInvestigation').mockResolvedValue({
+      status: 'REMEDIATING',
+      severity: 'HIGH',
+      summary: 's',
+      failureReason: null,
+    } as never);
+
+    const result = await handler({ investigationId: 'inv_1' });
+    expect(result.status).toBe('REMEDIATING');
+    expect(result.awaitingApproval).toBe(false);
+    expect(result.remediating).toBe(true);
+  });
+
+  it('accepts POST_FIX_VERIFY, which only follows an approval', async () => {
+    const { handler } = await import('../confirmOutcome.js');
+    const store = await import('../store.js');
+    vi.spyOn(store, 'getInvestigation').mockResolvedValue({
+      status: 'POST_FIX_VERIFY',
+      severity: 'HIGH',
+      summary: 's',
+      failureReason: null,
+    } as never);
+
+    await expect(handler({ investigationId: 'inv_1' })).resolves.toMatchObject({
+      status: 'POST_FIX_VERIFY',
+      remediating: true,
+    });
+  });
+
+  it('still fails an investigation that stopped without a decision', async () => {
+    const { handler, OutcomeIncomplete } = await import('../confirmOutcome.js');
+    const store = await import('../store.js');
+    vi.spyOn(store, 'getInvestigation').mockResolvedValue({
+      status: 'INVESTIGATING',
+      severity: null,
+      summary: null,
+      failureReason: null,
+    } as never);
+
+    // Nothing approved this one; it genuinely stopped mid-flight.
+    await expect(handler({ investigationId: 'inv_1' })).rejects.toBeInstanceOf(OutcomeIncomplete);
+  });
+});

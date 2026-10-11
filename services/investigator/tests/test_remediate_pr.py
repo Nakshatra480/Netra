@@ -4,6 +4,7 @@ All GitHub I/O is stubbed with unittest.mock so no real network calls are made.
 """
 from __future__ import annotations
 
+import io
 import json as _json
 import urllib.request
 from pathlib import Path
@@ -296,3 +297,73 @@ def test_create_pull_request_sends_correct_payload() -> None:
     assert body["title"] == "Fix: creds"
     auth = req.get_header("Authorization")
     assert "Bearer ghs_tok" in auth
+
+
+class TestPullRequestIdempotency:
+    """A retried remediation must not open a second pull request.
+
+    The remediation branch is named after the investigation, so if GitHub
+    reports that a pull request already exists for it, that pull request is
+    this investigation's own and should be adopted.
+    """
+
+    def test_an_existing_pull_request_is_adopted_not_duplicated(self, monkeypatch) -> None:
+        import urllib.error
+
+        from netra_investigator.aws import github
+
+        existing = "https://github.com/acme/app/pull/7"
+
+        def refuse(*_a, **_k):
+            raise urllib.error.HTTPError(
+                url="https://api.github.com/repos/acme/app/pulls",
+                code=422,
+                msg="Unprocessable Entity",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"errors":[{"message":"A pull request already exists for acme:netra/x."}]}'
+                ),
+            )
+
+        monkeypatch.setattr(github.urllib.request, "urlopen", refuse)
+        monkeypatch.setattr(
+            github, "find_open_pull_request", lambda *_a, **_k: existing
+        )
+
+        url = github.create_pull_request(
+            token="t",
+            full_name="acme/app",
+            title="Fix",
+            body="b",
+            head="netra/remediation/inv_1",
+            base="main",
+        )
+        assert url == existing
+
+    def test_a_real_refusal_still_fails(self, monkeypatch) -> None:
+        import urllib.error
+
+        from netra_investigator.aws import github
+
+        def refuse(*_a, **_k):
+            raise urllib.error.HTTPError(
+                url="https://api.github.com/repos/acme/app/pulls",
+                code=403,
+                msg="Forbidden",
+                hdrs=None,
+                fp=io.BytesIO(b'{"message":"Resource not accessible by integration"}'),
+            )
+
+        monkeypatch.setattr(github.urllib.request, "urlopen", refuse)
+
+        # Only the "already exists" case is recoverable; everything else is a
+        # genuine failure and must not be swallowed.
+        with pytest.raises(github.GitHubUnavailable):
+            github.create_pull_request(
+                token="t",
+                full_name="acme/app",
+                title="Fix",
+                body="b",
+                head="netra/remediation/inv_1",
+                base="main",
+            )

@@ -174,21 +174,55 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
 
       // Deterministic in the commit, so retries and double clicks converge.
-      const deliveryId = `demo-${headSha.slice(0, 12)}`;
-      const compact = deliveryId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24);
-      const investigationId = `inv_${compact}`;
+      // Which run of the demo this is.
+      //
+      // The fixture commit is fixed, so a delivery id derived from it alone
+      // gave exactly one investigation for all time: once that one finished,
+      // the demo could never be shown again, it only replayed its old result.
+      //
+      // So the run number advances past any run that has already finished,
+      // and stops at one that is still going. Two visitors clicking at the
+      // same moment compute the same number and converge on one investigation
+      // rather than starting two — the id is a function of the stored state,
+      // not of when the button was pressed.
+      const deliveryFor = (run: number) =>
+        run === 1 ? `demo-${headSha.slice(0, 12)}` : `demo-${headSha.slice(0, 12)}-r${run}`;
+      const idFor = (run: number) =>
+        `inv_${deliveryFor(run).replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
 
-      const existing = await store.getInvestigation(investigationId);
-      if (existing) {
-        return reply.status(200).send({
-          investigationId,
-          headSha,
-          branch,
-          repository: fullName,
-          alreadyRunning: true,
-          status: existing.status,
-        });
+      const FINISHED = ['RESOLVED', 'REJECTED', 'FAILED'];
+      const MAX_RUNS = 200; // a bound on the lookups, not a cap worth hitting
+
+      let run = 1;
+      let investigationId = idFor(run);
+      for (; run <= MAX_RUNS; run++) {
+        investigationId = idFor(run);
+        const existing = await store.getInvestigation(investigationId);
+        if (!existing) break; // nothing here yet: this run is ours to start
+
+        if (!FINISHED.includes(existing.status)) {
+          // Still under way, or waiting on a human. Show that one instead of
+          // starting a second investigation of the same commit.
+          return reply.status(200).send({
+            investigationId,
+            headSha,
+            branch,
+            repository: fullName,
+            alreadyRunning: true,
+            status: existing.status,
+            run,
+          });
+        }
       }
+
+      if (run > MAX_RUNS) {
+        throw new ApiError(
+          'INTERNAL',
+          'The demo has been run too many times against this fixture commit.',
+        );
+      }
+
+      const deliveryId = deliveryFor(run);
 
       const detail = {
         deliveryId,
@@ -242,6 +276,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         branch,
         repository: fullName,
         alreadyRunning: false,
+        run,
       });
     } catch (error) {
       return sendError(reply, error);

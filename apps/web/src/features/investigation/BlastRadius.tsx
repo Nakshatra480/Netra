@@ -218,7 +218,7 @@ export function BlastRadius({
           </Button>
         }
       />
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-[260px] flex-1">
         <ReactFlow
           onInit={(instance) => {
             flowRef.current = instance;
