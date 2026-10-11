@@ -259,24 +259,11 @@ describe('blast radius affected-path filter', () => {
     summary: '5 changed file(s) were analysed.',
   });
 
-  it('is disabled when nothing is on the affected path', async () => {
+  it('has no affected-path filter or minimap', async () => {
     const { BlastRadius } = await import('@/features/investigation/BlastRadius');
-    render(<BlastRadius graph={graph(0) as never} />);
-
-    const button = screen.getByRole('button', { name: /affected path/i });
-    // Enabled, this filter could only empty the canvas — which looks broken
-    // rather than answering the question.
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(button.getAttribute('title')).toMatch(/nothing is on the affected path/i);
-  });
-
-  it('is usable when something is on the affected path', async () => {
-    const { BlastRadius } = await import('@/features/investigation/BlastRadius');
-    render(<BlastRadius graph={graph(2) as never} />);
-
-    const button = screen.getByRole('button', { name: /affected path/i });
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    expect(button.getAttribute('aria-pressed')).toBe('false');
+    const { container } = render(<BlastRadius graph={graph(2) as never} />);
+    expect(screen.queryByRole('button', { name: /affected path/i })).toBeNull();
+    expect(container.querySelector('.react-flow__minimap')).toBeNull();
   });
 
   it('reports the real counts in the subtitle', async () => {

@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Background,
   BackgroundVariant,
   Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   useEdgesState,
@@ -22,13 +21,12 @@ import {
   Database,
   FileCode,
   FileDiff,
-  Filter,
   Globe,
   KeyRound,
   Package,
   ShieldCheck,
 } from 'lucide-react';
-import { Button, EmptyState, PanelHeader } from '@/components/primitives';
+import { EmptyState, PanelHeader } from '@/components/primitives';
 import { cn } from '@/lib/cn';
 
 /**
@@ -136,8 +134,7 @@ export function BlastRadius({
   selectedEvidenceFile?: string | null;
   className?: string;
 }) {
-  const [affectedOnly, setAffectedOnly] = useState(false);
-  const layout = useMemo(() => (graph ? toFlow(graph, affectedOnly) : null), [graph, affectedOnly]);
+  const layout = useMemo(() => (graph ? toFlow(graph) : null), [graph]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -146,8 +143,7 @@ export function BlastRadius({
   // the page polls for it — so by the time there are nodes to frame, the
   // viewport has already been set for an empty canvas and the artifacts sit
   // outside it. Holding the instance lets the view be re-fitted whenever the
-  // visible set changes, which is also what makes the affected-path filter
-  // look like it did something.
+  // graph changes.
   const flowRef = useRef<ReactFlowInstance<Node<NodeData>, Edge> | null>(null);
 
   useEffect(() => {
@@ -196,27 +192,6 @@ export function BlastRadius({
       <PanelHeader
         title="Blast radius"
         subtitle={`${graph.nodes.length} artifacts · ${affectedCount} on the affected path`}
-        actions={
-          <Button
-            size="sm"
-            variant={affectedOnly ? 'primary' : 'ghost'}
-            onClick={() => setAffectedOnly((v) => !v)}
-            aria-pressed={affectedOnly}
-            // With nothing on the affected path this filter can only empty the
-            // canvas, which reads as a broken control rather than an answer.
-            disabled={affectedCount === 0}
-            title={
-              affectedCount === 0
-                ? 'Nothing is on the affected path in this investigation'
-                : affectedOnly
-                  ? 'Show every artifact'
-                  : 'Show only what the change can reach'
-            }
-          >
-            <Filter size={13} />
-            Affected path
-          </Button>
-        }
       />
       <div className="relative min-h-[260px] flex-1">
         <ReactFlow
@@ -243,15 +218,6 @@ export function BlastRadius({
             showInteractive={false}
             className="!border-line !bg-surface [&>button]:!border-line [&>button]:!bg-surface [&>button]:!fill-ink-muted hover:[&>button]:!bg-surface-raised"
           />
-          <MiniMap
-            pannable
-            zoomable
-            className="!border !border-line !bg-surface-sunken"
-            maskColor="rgba(248,250,252,0.75)"
-            nodeColor={(node) =>
-              (node.data as NodeData).onAffectedPath ? 'var(--color-state-severe)' : 'var(--color-ink-subtle)'
-            }
-          />
         </ReactFlow>
       </div>
       {/* The graph is not the only way to read this: the same conclusion in prose. */}
@@ -268,8 +234,8 @@ export function BlastRadius({
  * A layered layout matches how the investigation reads: what changed, what it
  * reaches, and what that adds up to.
  */
-function toFlow(graph: BlastRadiusGraph, affectedOnly: boolean) {
-  const visible = affectedOnly ? graph.nodes.filter((n) => n.onAffectedPath) : graph.nodes;
+function toFlow(graph: BlastRadiusGraph) {
+  const visible = graph.nodes;
   const visibleIds = new Set(visible.map((n) => n.id));
 
   const depth = new Map<string, number>();
@@ -316,7 +282,7 @@ function toFlow(graph: BlastRadiusGraph, affectedOnly: boolean) {
         kind: node.kind,
         file: node.file,
         onAffectedPath: node.onAffectedPath,
-        dimmed: !affectedOnly && !node.onAffectedPath && graph.nodes.some((n) => n.onAffectedPath),
+        dimmed: !node.onAffectedPath && graph.nodes.some((n) => n.onAffectedPath),
         evidenceCount: node.evidenceIds.length,
       },
     };
